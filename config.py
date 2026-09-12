@@ -38,7 +38,7 @@ class Settings:
     allowed_user_id: int
     database_url: str
 
-    openrouter_api_key: str
+    openrouter_api_keys: list[str]
     ai_model: str
     ai_temperature: float
     ai_max_tokens: int
@@ -76,6 +76,15 @@ def load_settings() -> Settings:
     if not database_url:
         raise RuntimeError("Falta NEON_DATABASE_URL o DATABASE_URL")
 
+    # ---- Rotación de claves OpenRouter ----
+    keys: list[str] = []
+    for var in ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY_2", "OPENROUTER_API_KEY_3"):
+        value = _env(var)
+        if value:
+            keys.append(value)
+    if not keys:
+        raise RuntimeError("Falta OPENROUTER_API_KEY (y opcionalmente _2 y _3)")
+
     temperature_raw = _env("AI_TEMPERATURE", "0.35")
     try:
         temperature = float(temperature_raw)
@@ -92,7 +101,7 @@ def load_settings() -> Settings:
         discord_token=_required("DISCORD_BOT_TOKEN"),
         allowed_user_id=allowed_user_id,
         database_url=database_url,
-        openrouter_api_key=_required("OPENROUTER_API_KEY"),
+        openrouter_api_keys=keys,
         ai_model=model,
         ai_temperature=temperature,
         ai_max_tokens=_int("AI_MAX_TOKENS", 5000, 256, 16000),
