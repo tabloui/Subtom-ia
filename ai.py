@@ -13,7 +13,7 @@ import asyncpg
 from config import config
 from connector import connector
 from file_tools import FileTools
-from motor import motor, TaskType
+from motor import motor, TaskType, PromptLang
 
 
 IMAGE_EXTENSIONS = {
@@ -26,7 +26,6 @@ class Agent:
 
     # ==================================================================
     # RESPALDO ESTÁTICO DE VISIÓN
-    # (los reales se detectan en vivo con _refresh_vision_models)
     # ==================================================================
 
     VISION_MODELS = [
@@ -138,6 +137,17 @@ class Agent:
         self._vision_models: list[str] = []
         self._vision_loaded: bool = False
 
+        # Pool de claves FLUX con rotación
+        from collections import deque
+        self._flux_keys = deque(
+            key
+            for key in (
+                config.flux_api_key_1,
+                config.flux_api_key_2,
+            )
+            if key
+        )
+
     # ==================================================================
     # BASE DE DATOS / MEMORIA
     # ==================================================================
@@ -175,7 +185,7 @@ class Agent:
         # Cargar en vivo qué modelos :free soportan visión
         await self._refresh_vision_models()
 
-        # Pre-calentar conexiones TLS (OpenRouter, FLUX, DDG)
+        # Pre-calentar conexiones
         try:
             await motor.prewarm()
         except Exception as exc:
@@ -265,11 +275,6 @@ class Agent:
     # ==================================================================
 
     async def _refresh_vision_models(self) -> None:
-        """
-        Consulta OpenRouter y guarda solo los modelos :free que ACEPTAN
-        imágenes como entrada. Se llama una vez en init().
-        """
-
         try:
             timeout = aiohttp.ClientTimeout(total=20)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -430,7 +435,7 @@ class Agent:
     ) -> list[str]:
         """
         Devuelve la lista ordenada de modelos a intentar.
-        El motor ordena por salud (tasa de éxito + latencia).
+        El motor ordena por salud.
         """
 
         vision_list = self._vision_models or self.VISION_MODELS
@@ -448,7 +453,7 @@ class Agent:
                 self.CODE_MODELS, task, top=5
             )
 
-        # --- Texto / búsqueda / fetch / archivos / chat ---
+        # --- Texto / resto ---
         return motor.pick_models(
             self.TEXT_MODELS, task, top=5
         )
@@ -1253,7 +1258,7 @@ class Agent:
                     "name": "generate_image",
                     "description": (
                         "Genera una imagen a partir de un prompt de "
-                        "texto. Devuelve una URL a la imagen."
+                        "texto usando FLUX. Devuelve una URL a la imagen."
                     ),
                     "parameters": {
                         "type": "object",
@@ -1538,7 +1543,7 @@ class Agent:
             }
 
     # ==================================================================
-    # WRAPPERS CON CACHE (motor)
+    # WRAPPERS CON CACHE
     # ==================================================================
 
     async def _cached_search(
@@ -1736,7 +1741,7 @@ class Agent:
                 return data
 
     # ==================================================================
-    # GENERACIÓN DE IMAGEN (OpenRouter + fallback Pollinations)
+    # GENERACIÓN DE IMAGEN (FLUX)
     # ==================================================================
 
     async def generate_image(
@@ -1747,131 +1752,97 @@ class Agent:
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
 
+        if not self._flux_keys:
+            return {"error": "No hay claves FLUX configuradas."}
+
         prompt = prompt.strip()
-        last_error: str | None = None
+        key = self._flux_keys[0]
+        self._flux_keys.rotate(-1)
 
-        # --- 1) Intentar OpenRouter (chat con modalities imagen) ---
-        if config.openrouter_api_keys:
-
-            for model in self.IMAGE_MODELS:
-
-                for api_key in config.openrouter_api_keys:
-
-                    try:
-                        result = await self._openrouter_image(
-                            prompt, model, api_key
-                        )
-
-                        if result.get("image_url"):
-                            return result
-
-                        last_error = result.get("error") or last_error
-
-                    except Exception as exc:
-                        last_error = (
-                            f"{type(exc).__name__}: {exc}"
-                        )
-                        continue
-
-        # --- 2) Fallback: Pollinations (sin clave) ---
-        try:
-            url = self._pollinations_url(prompt)
-            return {
-                "image_url": url,
-                "provider": "pollinations",
-                "note": (
-                    "OpenRouter no devolvió imagen; "
-                    "usé Pollinations como respaldo."
-                ),
-            }
-        except Exception as exc:
-            return {
-                "error": (
-                    "No se pudo generar imagen. "
-                    f"OpenRouter: {last_error}. "
-                    f"Pollinations: {exc}"
-                )
-            }
-
-    async def _openrouter_image(
-        self,
-        prompt: str,
-        model: str,
-        api_key: str,
-    ) -> dict[str, Any]:
-
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "modalities": ["image", "text"],
-        }
+        base = config.flux_base_url.rstrip("/")
+        model = config.flux_endpoint
 
         headers = {
-            "Authorization": f"Bearer {api_key}",
+            "accept": "application/json",
+            "x-key": key,
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://subtom.local",
-            "X-Title": "Subtom IA",
         }
 
         timeout = aiohttp.ClientTimeout(total=120)
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
+
+            # --- 1) Crear tarea ---
             async with session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
+                f"{base}/{model}",
                 headers=headers,
-                json=payload,
-            ) as resp:
+                json={
+                    "prompt": prompt,
+                    "width": 1024,
+                    "height": 1024,
+                    "output_format": "png",
+                },
+            ) as response:
 
-                data = await resp.json(content_type=None)
+                data = await response.json(content_type=None)
 
-                if resp.status >= 400:
+                if response.status >= 400:
                     return {
-                        "error": f"HTTP {resp.status}: {str(data)[:300]}"
+                        "error": f"FLUX HTTP {response.status}",
+                        "detail": data,
                     }
 
-                choices = data.get("choices") or []
-                if not choices:
-                    return {"error": "sin choices"}
+                polling_url = data.get("polling_url")
 
-                message = choices[0].get("message") or {}
-                images = message.get("images") or []
+            if not polling_url:
+                return {
+                    "error": "FLUX no devolvió polling_url",
+                    "detail": data,
+                }
 
-                for img in images:
-                    if not isinstance(img, dict):
-                        continue
+            # --- 2) Polling con la URL oficial ---
+            for _ in range(60):
 
-                    url = None
-                    img_field = img.get("image_url")
+                await asyncio.sleep(1)
 
-                    if isinstance(img_field, dict):
-                        url = img_field.get("url")
-                    elif isinstance(img_field, str):
-                        url = img_field
-                    else:
-                        url = img.get("url")
+                async with session.get(
+                    polling_url,
+                    headers={"x-key": key},
+                ) as response:
 
-                    if url:
+                    result = await response.json(content_type=None)
+
+                    if response.status >= 400:
                         return {
-                            "image_url": url,
-                            "model": model,
-                            "provider": "openrouter",
+                            "error": (
+                                "FLUX polling HTTP "
+                                f"{response.status}"
+                            ),
+                            "detail": result,
                         }
 
-        return {"error": "respuesta sin imagen"}
+                    status = str(result.get("status", "")).lower()
 
-    @staticmethod
-    def _pollinations_url(prompt: str) -> str:
-        from urllib.parse import quote
-        return (
-            "https://image.pollinations.ai/prompt/"
-            + quote(prompt, safe="")
-            + "?width=1024&height=1024&nologo=true"
-        )
+                    if status == "ready":
+                        sample = (
+                            result.get("result", {}).get("sample")
+                        )
+                        if sample:
+                            return {"image_url": sample}
+                        return {"result": result}
+
+                    if status in {
+                        "error",
+                        "failed",
+                        "request moderated",
+                        "content moderated",
+                    }:
+                        return {
+                            "error": f"FLUX falló: {status}",
+                            "detail": result,
+                        }
+
+            return {"error": "FLUX tardó demasiado"}
 
     # ==================================================================
     # CHAT / TOOL LOOP CON FALLBACK DE MODELOS
@@ -1885,9 +1856,10 @@ class Agent:
         force_image: bool = False,
     ) -> tuple[str, str | None]:
 
-        # --- 1) Clasificación instantánea (motor) ---
+        # --- 1) Clasificación instantánea ---
         task = motor.classify(prompt)
-        print(f"[MOTOR] tarea={task.value}")
+        lang = motor.lang(prompt)
+        print(f"[MOTOR] tarea={task.value} lang={lang.value}")
 
         await self.cleanup_memory()
 
@@ -1922,7 +1894,7 @@ class Agent:
 
         image_url: str | None = None
 
-        # --- 3) Modelos ordenados por salud (motor) ---
+        # --- 3) Modelos ordenados por salud ---
         modelos = self._select_model(
             prompt, task, force_image
         )
@@ -1983,13 +1955,13 @@ class Agent:
                             answer,
                         )
 
-                        # métrica OK
                         dt = (
                             asyncio.get_event_loop().time() - t0
                         )
                         motor.record(
                             model=modelo_actual,
                             task=task,
+                            lang=lang,
                             latency=dt,
                             error=False,
                         )
@@ -2043,13 +2015,14 @@ class Agent:
 
                 last_error = exc
 
-                # métrica KO
                 dt = asyncio.get_event_loop().time() - t0
                 motor.record(
                     model=modelo_actual,
                     task=task,
+                    lang=lang,
                     latency=dt,
                     error=True,
+                    error_msg=str(exc)[:200],
                 )
 
                 err_txt = str(exc).lower()
