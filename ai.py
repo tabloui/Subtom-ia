@@ -407,6 +407,39 @@ class Agent:
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
 
+            # ------------------------- BÚSQUEDA WEB -------------------------
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": (
+                        "Busca información actual en internet con "
+                        "DuckDuckGo. Úsala para noticias, datos "
+                        "recientes, documentación o verificar algo "
+                        "que no sabes."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": (
+                                    "Consulta en lenguaje natural."
+                                ),
+                            },
+                            "max_results": {
+                                "type": "integer",
+                                "default": 5,
+                                "minimum": 1,
+                                "maximum": 10,
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
+
+            # ------------------------- ARCHIVOS -------------------------
             {
                 "type": "function",
                 "function": {
@@ -1163,6 +1196,14 @@ class Agent:
 
         try:
 
+            # ------------------------- BÚSQUEDA WEB -------------------------
+            if name == "web_search":
+                return await self.files.web_search(
+                    args["query"],
+                    int(args.get("max_results", 5)),
+                )
+
+            # ------------------------- ARCHIVOS -------------------------
             if name == "file_list":
                 return {
                     "files": self.files.list_files(
