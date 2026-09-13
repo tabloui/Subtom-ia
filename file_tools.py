@@ -43,6 +43,11 @@ NUEVO (robustez / utilidades extra):
 - touch (crea vacío)
 - empty_dir / clear_dir
 
+NUEVO (búsqueda web):
+- web_search: motor DuckDuckGo HTML (async, sin API key).
+- TOOL_SCHEMAS: esquemas compatibles con OpenRouter / OpenAI tools.
+- dispatch_tool: ejecuta la tool que pida el LLM.
+
 IMPORTANTE:
 Este módulo permite operaciones reales sobre el sistema de archivos.
 Para una IA, es recomendable ejecutar estas funciones con una carpeta de
@@ -51,9 +56,11 @@ trabajo permitida (workspace) y no con rutas arbitrarias del sistema.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import csv
 import hashlib
+import inspect
 import io
 import json
 import mimetypes
@@ -64,6 +71,10 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
+
+import aiohttp
+from bs4 import BeautifulSoup
 
 
 # ---------------------------------------------------------------------------
@@ -749,7 +760,7 @@ class FileTools:
         }
 
     # ======================================================================
-    # NUEVO: UTILIDADES EXTRA
+    # UTILIDADES EXTRA
     # ======================================================================
 
     def exists(self, name: str) -> bool:
@@ -1058,6 +1069,91 @@ class FileTools:
     def clear_dir(self, name: str) -> str:
         return self.empty_dir(name)
 
+    # ======================================================================
+    # BÚSQUEDA WEB (DuckDuckGo HTML, sin API key)
+    # ======================================================================
+
+    async def web_search(
+        self,
+        query: str,
+        max_results: int = 5,
+        timeout: float = 12.0,
+    ) -> dict[str, Any]:
+        """Busca en DuckDuckGo HTML y devuelve resultados parseados."""
+
+        if not query or not query.strip():
+            return {"error": "query vacío", "results": []}
+
+        max_results = max(1, min(int(max_results), 10))
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+            "Referer": "https://duckduckgo.com/",
+        }
+
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+
+        async with aiohttp.ClientSession(
+            headers=headers,
+            timeout=client_timeout,
+        ) as session:
+            async with session.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": query, "kl": "wt-wt"},
+                allow_redirects=True,
+            ) as resp:
+                resp.raise_for_status()
+                html = await resp.text()
+
+        soup = BeautifulSoup(html, "lxml")
+
+        def clean(u: str) -> str:
+            if not u:
+                return ""
+            if u.startswith("//"):
+                u = "https:" + u
+            if "uddg=" in u:
+                qs = parse_qs(urlparse(u).query)
+                t = qs.get("uddg", [""])[0]
+                if t:
+                    return unquote(t)
+            return u
+
+        results: list[dict[str, str]] = []
+
+        for block in soup.select("div.result, div.web-result"):
+            title_el = block.select_one("a.result__a")
+            if not title_el:
+                continue
+
+            title = title_el.get_text(" ", strip=True)
+            url = clean(title_el.get("href", ""))
+            snippet_el = block.select_one(".result__snippet")
+            snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
+
+            if not url or not title:
+                continue
+
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+            })
+
+            if len(results) >= max_results:
+                break
+
+        return {
+            "query": query,
+            "count": len(results),
+            "results": results,
+        }
+
 
 # ---------------------------------------------------------------------------
 # API para una IA: funciones pequeñas y fáciles de convertir en tools.
@@ -1275,6 +1371,291 @@ def ensure_inside(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# BÚSQUEDA WEB (módulo)
+# ---------------------------------------------------------------------------
+
+async def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
+    return await TOOLS.web_search(query, max_results)
+
+
+# ---------------------------------------------------------------------------
+# TOOL SCHEMAS (lo que ve el LLM en OpenRouter)
+# ---------------------------------------------------------------------------
+
+TOOL_SCHEMAS: list[dict[str, Any]] = [
+    # ------------------------- BÚSQUEDA WEB -------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "Busca información actual en internet con DuckDuckGo. "
+                "Úsala para noticias, datos recientes, documentación "
+                "o verificar algo que no sabes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Consulta en lenguaje natural.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "default": 5,
+                        "minimum": 1,
+                        "maximum": 10,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+
+    # ------------------------- LECTURA -------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Lee un archivo de texto plano del workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_any",
+            "description": (
+                "Lee cualquier archivo y devuelve algo útil según su tipo "
+                "(texto, imagen base64, PDF extraído, listado si es carpeta)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "Lista el contenido de un directorio.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directory": {"type": "string", "default": "."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "tree",
+            "description": "Árbol recursivo de un directorio.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directory": {"type": "string", "default": "."},
+                    "max_depth": {
+                        "type": "integer",
+                        "default": 3,
+                        "minimum": 1,
+                        "maximum": 6,
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep",
+            "description": "Busca un texto dentro de todos los archivos de un directorio.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "directory": {"type": "string", "default": "."},
+                    "extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+
+    # ------------------------- ESCRITURA -------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "create_file",
+            "description": "Crea un archivo nuevo con contenido.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "content": {"type": "string", "default": ""},
+                    "overwrite": {"type": "boolean", "default": False},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Escribe (sobrescribe) un archivo de texto.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["name", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_file",
+            "description": "Añade contenido al final de un archivo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["name", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "replace_in_file",
+            "description": "Reemplaza texto dentro de un archivo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "old": {"type": "string"},
+                    "new": {"type": "string"},
+                },
+                "required": ["name", "old", "new"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mkdir",
+            "description": "Crea un directorio.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_file",
+            "description": "Borra un archivo o carpeta.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "recursive": {"type": "boolean", "default": False},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+
+    # ------------------------- BACKUP (automejora) -------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "backup",
+            "description": (
+                "Copia un archivo/carpeta con timestamp. "
+                "SIEMPRE úsala antes de modificar tu propio código."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# DISPATCHER — conecta nombre de tool → función real
+# ---------------------------------------------------------------------------
+
+def _build_registry() -> dict[str, Any]:
+    return {
+        # web
+        "web_search": web_search,
+
+        # lectura
+        "read_file": read_file,
+        "read_any": read_any,
+        "list_files": list_files,
+        "tree": tree,
+        "grep": grep,
+
+        # escritura
+        "create_file": create_file,
+        "write_file": write_file,
+        "append_file": append_file,
+        "replace_in_file": replace_in_file,
+        "mkdir": mkdir,
+        "delete_file": delete_file,
+
+        # seguridad
+        "backup": backup,
+    }
+
+
+_TOOL_REGISTRY = _build_registry()
+
+
+async def dispatch_tool(name: str, args: dict[str, Any]) -> str:
+    """Ejecuta una tool y devuelve siempre un string (para el LLM)."""
+
+    fn = _TOOL_REGISTRY.get(name)
+
+    if fn is None:
+        return f"Error: herramienta desconocida '{name}'"
+
+    try:
+        result = fn(**args)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        return f"Error en {name}: {type(exc).__name__}: {exc}"
+
+    if isinstance(result, str):
+        return result
+
+    return json.dumps(result, indent=2, ensure_ascii=False, default=str)
+
+
+# ---------------------------------------------------------------------------
 # CLI opcional: también puedes usar el archivo desde la terminal.
 # ---------------------------------------------------------------------------
 
@@ -1358,6 +1739,11 @@ def main() -> None:
     p = sub.add_parser("duplicates")
     p.add_argument("directory", nargs="?", default=".")
 
+    # NUEVO: búsqueda web desde CLI
+    p = sub.add_parser("search")
+    p.add_argument("query")
+    p.add_argument("--max", type=int, default=5)
+
     args = parser.parse_args()
 
     try:
@@ -1409,6 +1795,9 @@ def main() -> None:
             result = backup(args.name)
         elif args.command == "duplicates":
             result = json.dumps(find_duplicates(args.directory), indent=2, ensure_ascii=False)
+        elif args.command == "search":
+            data = asyncio.run(web_search(args.query, args.max))
+            result = json.dumps(data, indent=2, ensure_ascii=False)
         else:
             raise ValueError("Comando desconocido")
 
