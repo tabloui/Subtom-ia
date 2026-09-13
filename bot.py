@@ -122,6 +122,9 @@ async def extract_prompt(
         "!image ",
         "/image ",
         "image: ",
+        "!imagen ",
+        "/imagen ",
+        "imagen: ",
     )
 
     for prefix in prefixes:
@@ -252,12 +255,54 @@ def build_user_context(
 
         for att in attachments:
 
-            kind = "imagen" if att["is_image"] else "archivo"
+            if att["is_image"]:
 
+                lines.append(
+                    f"  * [imagen] {att['filename']} "
+                    f"({att['content_type']}) "
+                    f"-> ruta local: {att['path']}"
+                )
+
+            else:
+
+                lines.append(
+                    f"  * [archivo] {att['filename']} "
+                    f"({att['content_type']}) "
+                    f"-> ruta local: {att['path']}"
+                )
+
+        # Instrucciones extra para el modelo
+        has_image = any(a["is_image"] for a in attachments)
+        has_pdf = any(
+            (a["content_type"] or "") == "application/pdf"
+            for a in attachments
+        )
+        has_text = any(
+            (a["content_type"] or "").startswith("text/")
+            for a in attachments
+        )
+
+        lines.append("")
+        lines.append("[Instrucciones]")
+
+        if has_image:
             lines.append(
-                f"  * [{kind}] {att['filename']} "
-                f"({att['content_type']}) "
-                f"-> ruta local: {att['path']}"
+                "- El usuario adjuntó una imagen. "
+                "Analízala directamente (la ves multimodal)."
+            )
+
+        if has_pdf:
+            lines.append(
+                "- El usuario adjuntó un PDF. "
+                "Si necesitas leerlo, usa la herramienta "
+                "file_read_pdf con la ruta local indicada."
+            )
+
+        if has_text:
+            lines.append(
+                "- El usuario adjuntó un archivo de texto. "
+                "Si necesitas leerlo, usa file_read_text "
+                "o file_read_any con la ruta local."
             )
 
     return "\n".join(lines)
@@ -306,6 +351,55 @@ async def send_files(
         except Exception as exc:
 
             print(f"Error enviando archivo: {exc}")
+
+
+# ============================================================
+# IMAGEN GENERADA (descarga y reenvía)
+# ============================================================
+
+async def send_generated_image(
+    chat: discord.Messageable,
+    image_url: str,
+) -> None:
+    """
+    Descarga la imagen generada por FLUX y la manda como
+    adjunto de Discord (las URLs de BFL expiran en 10 min).
+    """
+
+    try:
+
+        async with aiohttp.ClientSession() as session:
+
+            async with session.get(image_url) as resp:
+
+                if resp.status < 400:
+
+                    data = await resp.read()
+
+                    await chat.send(
+                        file=discord.File(
+                            io.BytesIO(data),
+                            filename="subtom.png",
+                        )
+                    )
+
+                    return
+
+                # Fallback: mandar el link si no se puede descargar
+                await chat.send(
+                    f"🖼️ Imagen generada: {image_url}"
+                )
+
+    except Exception as exc:
+
+        print(f"Error descargando imagen generada: {exc}")
+
+        try:
+            await chat.send(
+                f"🖼️ Imagen generada: {image_url}"
+            )
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -397,37 +491,12 @@ async def on_message(
     # Respuesta de texto
     await send_long(message.channel, response)
 
-    # Imagen generada
+    # Imagen generada (descargada y reenviada como archivo)
     if image_url:
-
-        try:
-
-            async with aiohttp.ClientSession() as session:
-
-                async with session.get(image_url) as resp:
-
-                    if resp.status < 400:
-
-                        data = await resp.read()
-
-                        await message.channel.send(
-                            file=discord.File(
-                                io.BytesIO(data),
-                                filename="subtom.png",
-                            )
-                        )
-
-                    else:
-
-                        await message.channel.send(
-                            f"Imagen generada: {image_url}"
-                        )
-
-        except Exception:
-
-            await message.channel.send(
-                f"Imagen generada: {image_url}"
-            )
+        await send_generated_image(
+            message.channel,
+            image_url,
+        )
 
     # Archivos del bot
     if files:
