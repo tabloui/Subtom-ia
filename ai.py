@@ -13,6 +13,7 @@ import asyncpg
 from config import config
 from connector import connector
 from file_tools import FileTools
+from motor import motor, TaskType
 
 
 IMAGE_EXTENSIONS = {
@@ -125,16 +126,6 @@ class Agent:
     ]
 
     # ==================================================================
-    # MODELOS DE GENERACIÓN DE IMAGEN
-    # ==================================================================
-
-    IMAGE_MODELS = [
-        "google/gemini-2.0-flash-exp:free",
-        "google/gemini-2.0-flash-thinking-exp:free",
-        "google/gemini-flash-1.5-8b:free",
-    ]
-
-    # ==================================================================
     # INIT
     # ==================================================================
 
@@ -183,6 +174,12 @@ class Agent:
 
         # Cargar en vivo qué modelos :free soportan visión
         await self._refresh_vision_models()
+
+        # Pre-calentar conexiones TLS (OpenRouter, FLUX, DDG)
+        try:
+            await motor.prewarm()
+        except Exception as exc:
+            print(f"[MOTOR] prewarm falló: {exc}")
 
     async def close(self) -> None:
         if self.pool:
@@ -428,36 +425,33 @@ class Agent:
     def _select_model(
         self,
         prompt: str,
+        task: TaskType,
         force_image: bool = False,
     ) -> list[str]:
         """
         Devuelve la lista ordenada de modelos a intentar.
-        El primero es el preferido; los demás son fallback.
+        El motor ordena por salud (tasa de éxito + latencia).
         """
 
-        # --- Visión (usa la lista detectada en vivo) ---
         vision_list = self._vision_models or self.VISION_MODELS
 
-        if force_image:
+        # --- Visión ---
+        if force_image or task == TaskType.IMAGE_GEN:
             return vision_list
 
-        if self._extract_image_paths(prompt):
+        if task == TaskType.IMAGE_READ:
             return vision_list
 
-        code_keywords = [
-            "código", "code", "programa", "script",
-            "función", "function", "deploy", "github",
-            "error", "bug", "debug", "python",
-            "javascript", "html", "css", "api",
-            "servidor", "server", "base de datos",
-            "database", "commit", "push", "repositorio",
-            "repo", "vercel", "railway",
-        ]
+        # --- Código ---
+        if task == TaskType.CODE:
+            return motor.pick_models(
+                self.CODE_MODELS, task, top=5
+            )
 
-        if any(kw in prompt.lower() for kw in code_keywords):
-            return self.CODE_MODELS
-
-        return self.TEXT_MODELS
+        # --- Texto / búsqueda / fetch / archivos / chat ---
+        return motor.pick_models(
+            self.TEXT_MODELS, task, top=5
+        )
 
     # ==================================================================
     # DEFINICIÓN DE HERRAMIENTAS
@@ -1286,16 +1280,10 @@ class Agent:
 
             # ------------------------- BÚSQUEDA WEB -------------------------
             if name == "web_search":
-                return await self.files.web_search(
-                    args["query"],
-                    int(args.get("max_results", 5)),
-                )
+                return await self._cached_search(args)
 
             if name == "web_fetch":
-                return await self.files.web_fetch(
-                    args["url"],
-                    int(args.get("max_chars", 8000)),
-                )
+                return await self._cached_fetch(args)
 
             # ------------------------- ARCHIVOS -------------------------
             if name == "file_list":
@@ -1548,6 +1536,60 @@ class Agent:
                     f"{str(exc)[:2000]}"
                 )
             }
+
+    # ==================================================================
+    # WRAPPERS CON CACHE (motor)
+    # ==================================================================
+
+    async def _cached_search(
+        self, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        query = args.get("query", "")
+        max_results = int(args.get("max_results", 5))
+
+        cached = motor.cache_get_search(
+            f"{query}::{max_results}"
+        )
+        if cached is not None:
+            cached = dict(cached)
+            cached["_cached"] = True
+            return cached
+
+        result = await self.files.web_search(query, max_results)
+
+        if isinstance(result, dict) and result.get("results"):
+            motor.cache_set_search(
+                f"{query}::{max_results}", result
+            )
+
+        return result
+
+    async def _cached_fetch(
+        self, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        url = args.get("url", "")
+        max_chars = int(args.get("max_chars", 8000))
+
+        cached = motor.cache_get_fetch(
+            f"{url}::{max_chars}"
+        )
+        if cached is not None:
+            cached = dict(cached)
+            cached["_cached"] = True
+            return cached
+
+        result = await self.files.web_fetch(url, max_chars)
+
+        if (
+            isinstance(result, dict)
+            and result.get("text")
+            and not result.get("error")
+        ):
+            motor.cache_set_fetch(
+                f"{url}::{max_chars}", result
+            )
+
+        return result
 
     # ==================================================================
     # GITHUB
@@ -1843,13 +1885,17 @@ class Agent:
         force_image: bool = False,
     ) -> tuple[str, str | None]:
 
+        # --- 1) Clasificación instantánea (motor) ---
+        task = motor.classify(prompt)
+        print(f"[MOTOR] tarea={task.value}")
+
         await self.cleanup_memory()
 
         await self.save(user_id, channel_id, "user", prompt)
 
         messages = await self.history(user_id, channel_id)
 
-        # --- Imágenes ---
+        # --- 2) Imágenes (multimodal) ---
         image_paths = self._extract_image_paths(prompt)
 
         if image_paths and messages:
@@ -1876,12 +1922,16 @@ class Agent:
 
         image_url: str | None = None
 
-        # --- Modelos a intentar (fallback) ---
-        modelos = self._select_model(prompt, force_image)
+        # --- 3) Modelos ordenados por salud (motor) ---
+        modelos = self._select_model(
+            prompt, task, force_image
+        )
 
         last_error: Exception | None = None
 
         for modelo_actual in modelos:
+
+            t0 = asyncio.get_event_loop().time()
 
             try:
 
@@ -1933,6 +1983,17 @@ class Agent:
                             answer,
                         )
 
+                        # métrica OK
+                        dt = (
+                            asyncio.get_event_loop().time() - t0
+                        )
+                        motor.record(
+                            model=modelo_actual,
+                            task=task,
+                            latency=dt,
+                            error=False,
+                        )
+
                         return answer, image_url
 
                     # --- Tools ---
@@ -1982,9 +2043,17 @@ class Agent:
 
                 last_error = exc
 
+                # métrica KO
+                dt = asyncio.get_event_loop().time() - t0
+                motor.record(
+                    model=modelo_actual,
+                    task=task,
+                    latency=dt,
+                    error=True,
+                )
+
                 err_txt = str(exc).lower()
 
-                # Detectar si el fallo fue por la imagen
                 if (
                     "image" in err_txt
                     or "vision" in err_txt
