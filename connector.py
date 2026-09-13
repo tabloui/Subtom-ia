@@ -101,7 +101,7 @@ class AIConnector:
         }
 
     # ------------------------------------------------------------------
-    # ROTACIÓN DE CLAVES
+    # UTILIDAD DE TIEMPO
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -112,27 +112,38 @@ class AIConnector:
         except RuntimeError:
             return asyncio.get_event_loop().time()
 
+    # ------------------------------------------------------------------
+    # ROTACIÓN DE CLAVES
+    # ------------------------------------------------------------------
+
     def _available_keys(self) -> list[tuple[int, str]]:
         """
-        Devuelve lista de (índice_real, clave) que NO están en cooldown,
-        empezando por la última usada con éxito.
+        Devuelve lista de (índice_real, clave) que NO están en cooldown.
+        Si TODAS están en cooldown, resetea y devuelve todas
+        (evita el error 'No hay claves disponibles').
         """
-
         now = self._now()
         total = len(config.openrouter_api_keys)
 
         result: list[tuple[int, str]] = []
 
         for offset in range(total):
-
             idx = (self._key_index + offset) % total
-
             cooldown = self._cooldowns.get(idx, 0)
-
             if now >= cooldown:
-                result.append(
-                    (idx, config.openrouter_api_keys[idx])
-                )
+                result.append((idx, config.openrouter_api_keys[idx]))
+
+        # Si todas están en cooldown, resetear y usar todas
+        if not result and total > 0:
+            print(
+                "[CONNECTOR] Todas las claves en cooldown. "
+                "Reseteando cooldowns."
+            )
+            self._cooldowns.clear()
+            result = [
+                (i, config.openrouter_api_keys[i])
+                for i in range(total)
+            ]
 
         return result
 
@@ -182,11 +193,25 @@ class AIConnector:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
+        # ----------------------------------------------------------
+        # Claves disponibles
+        # ----------------------------------------------------------
+
         keys = self._available_keys()
 
         if not keys:
+            print(
+                "[CONNECTOR] Forzando uso de todas las claves."
+            )
+            keys = [
+                (i, k)
+                for i, k in enumerate(config.openrouter_api_keys)
+            ]
+
+        if not keys:
             raise RuntimeError(
-                "No hay claves de API disponibles para OpenRouter."
+                "No hay claves de OpenRouter configuradas. "
+                "Revisa OPENROUTER_API_KEY en el .env."
             )
 
         timeout = aiohttp.ClientTimeout(
@@ -214,7 +239,7 @@ class AIConnector:
                         # --- Rate limit ---
                         if response.status == 429:
                             self._cooldowns[real_idx] = (
-                                self._now() + 60
+                                self._now() + 10
                             )
                             last_error = RuntimeError(
                                 f"OpenRouter HTTP 429 "
@@ -227,7 +252,7 @@ class AIConnector:
                         # --- Clave inválida / sin permiso ---
                         if response.status in (401, 403):
                             self._cooldowns[real_idx] = (
-                                self._now() + 300
+                                self._now() + 30
                             )
                             last_error = RuntimeError(
                                 f"OpenRouter HTTP "
@@ -238,7 +263,6 @@ class AIConnector:
                             continue
 
                         # --- Modelo no disponible / error 404 ---
-                        # No penalizamos la clave: es problema del modelo.
                         if response.status == 404:
                             raise RuntimeError(
                                 f"OpenRouter HTTP 404 "
