@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import re
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -25,43 +24,24 @@ IMAGE_EXTENSIONS = {
 class Agent:
 
     # ==================================================================
-    # LISTAS DE MODELOS :free POR ESPECIALIDAD
+    # RESPALDO ESTÁTICO DE VISIÓN
+    # (los reales se detectan en vivo con _refresh_vision_models)
     # ==================================================================
 
     VISION_MODELS = [
-        "inclusionai/ling-3.0-flash-vl:free",
-        "google/gemma-4-31b-it:free",
-        "google/gemma-4-26b-a4b-it:free",
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-        "minimax/minimax-m3:free",
-        "thinkingmachines/inkling-small:free",
-        "thinkingmachines/inkling:free",
-        "dots-studio/dots-3-note-preview:free",
+        "google/gemini-2.0-flash-exp:free",
+        "google/gemini-2.0-flash-thinking-exp:free",
+        "qwen/qwen-2-vl-7b-instruct:free",
+        "qwen/qwen-2-vl-72b-instruct:free",
         "qwen/qwen2.5-vl-72b-instruct:free",
-        "qwen/qwen2.5-vl-32b-instruct:free",
-        "qwen/qwen2.5-vl-7b-instruct:free",
-        "qwen/qwen2.5-vl-3b-instruct:free",
-        "qwen/qwen3.7-flash:free",
-        "moonshotai/kimi-vl-a3b-thinking:free",
-        "nvidia/nemotron-nano-12b-v2-vl:free",
-        "nvidia/llama-nemotron-rerank-vl-1b-v2:free",
-        "nvidia/nemotron-3.5-content-safety:free",
         "meta-llama/llama-3.2-11b-vision-instruct:free",
         "meta-llama/llama-3.2-90b-vision-instruct:free",
-        "google/gemma-3-27b-it:free",
-        "google/gemma-3-12b-it:free",
-        "google/gemini-2.0-flash-exp:free",
-        "google/gemini-2.0-flash-lite-preview-02-05:free",
-        "mistralai/mistral-small-3.1-24b-instruct:free",
-        "qwen/qwen2-vl-72b-instruct:free",
-        "qwen/qwen2-vl-7b-instruct:free",
-        "qwen/qwen2-vl-2b-instruct:free",
         "microsoft/phi-3.5-vision-instruct:free",
-        "llava-hf/llava-1.5-7b-hf:free",
-        "OpenGVLab/InternVL2-8B:free",
-        "OpenGVLab/InternVL2-26B:free",
-        "google/paligemma-3b-pt-224:free",
     ]
+
+    # ==================================================================
+    # MODELOS DE CÓDIGO
+    # ==================================================================
 
     CODE_MODELS = [
         "qwen/qwen3-coder:free",
@@ -100,6 +80,10 @@ class Agent:
         "meta-llama/llama-3.3-70b-instruct:free",
         "meta-llama/llama-3.1-8b-instruct:free",
     ]
+
+    # ==================================================================
+    # MODELOS DE TEXTO
+    # ==================================================================
 
     TEXT_MODELS = [
         "nvidia/nemotron-3-super-120b-a12b:free",
@@ -141,6 +125,16 @@ class Agent:
     ]
 
     # ==================================================================
+    # MODELOS DE GENERACIÓN DE IMAGEN
+    # ==================================================================
+
+    IMAGE_MODELS = [
+        "google/gemini-2.0-flash-exp:free",
+        "google/gemini-2.0-flash-thinking-exp:free",
+        "google/gemini-flash-1.5-8b:free",
+    ]
+
+    # ==================================================================
     # INIT
     # ==================================================================
 
@@ -149,14 +143,9 @@ class Agent:
 
         self.files = FileTools(config.workspace)
 
-        self._flux_keys = deque(
-            key
-            for key in (
-                config.flux_api_key_1,
-                config.flux_api_key_2,
-            )
-            if key
-        )
+        # Cache de modelos con visión (se llena en init())
+        self._vision_models: list[str] = []
+        self._vision_loaded: bool = False
 
     # ==================================================================
     # BASE DE DATOS / MEMORIA
@@ -191,6 +180,9 @@ class Agent:
                 ON subtom_memory(user_id, channel_id, created_at DESC)
                 """
             )
+
+        # Cargar en vivo qué modelos :free soportan visión
+        await self._refresh_vision_models()
 
     async def close(self) -> None:
         if self.pool:
@@ -270,6 +262,70 @@ class Agent:
             }
             for row in rows
         ]
+
+    # ==================================================================
+    # DETECCIÓN DINÁMICA DE MODELOS CON VISIÓN
+    # ==================================================================
+
+    async def _refresh_vision_models(self) -> None:
+        """
+        Consulta OpenRouter y guarda solo los modelos :free que ACEPTAN
+        imágenes como entrada. Se llama una vez en init().
+        """
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://openrouter.ai/api/v1/models"
+                ) as resp:
+                    data = await resp.json(content_type=None)
+        except Exception as exc:
+            print(
+                f"[VISION] No se pudo cargar lista de modelos: "
+                f"{type(exc).__name__}: {exc}. "
+                f"Usando lista estática como respaldo."
+            )
+            self._vision_models = list(self.VISION_MODELS)
+            self._vision_loaded = False
+            return
+
+        models = data.get("data") or []
+
+        vision_free: list[str] = []
+
+        for m in models:
+            model_id = m.get("id", "")
+
+            if not model_id.endswith(":free"):
+                continue
+
+            arch = m.get("architecture") or {}
+            input_mods = arch.get("input_modalities") or []
+
+            if "image" in input_mods:
+                vision_free.append(model_id)
+
+        if not vision_free:
+            print(
+                "[VISION] OpenRouter no devolvió modelos free con "
+                "visión. Usando lista estática como respaldo."
+            )
+            self._vision_models = list(self.VISION_MODELS)
+            self._vision_loaded = False
+            return
+
+        self._vision_models = vision_free
+        self._vision_loaded = True
+
+        print(
+            f"[VISION] {len(vision_free)} modelos :free con visión "
+            f"detectados en OpenRouter:"
+        )
+        for mid in vision_free[:10]:
+            print(f"  - {mid}")
+        if len(vision_free) > 10:
+            print(f"  ... y {len(vision_free) - 10} más")
 
     # ==================================================================
     # VISIÓN
@@ -379,11 +435,14 @@ class Agent:
         El primero es el preferido; los demás son fallback.
         """
 
+        # --- Visión (usa la lista detectada en vivo) ---
+        vision_list = self._vision_models or self.VISION_MODELS
+
         if force_image:
-            return self.VISION_MODELS
+            return vision_list
 
         if self._extract_image_paths(prompt):
-            return self.VISION_MODELS
+            return vision_list
 
         code_keywords = [
             "código", "code", "programa", "script",
@@ -414,9 +473,8 @@ class Agent:
                     "name": "web_search",
                     "description": (
                         "Busca información actual en internet con "
-                        "DuckDuckGo. Úsala para noticias, datos "
-                        "recientes, documentación o verificar algo "
-                        "que no sabes."
+                        "DuckDuckGo. Devuelve título, URL y snippet. "
+                        "Usa web_fetch después para leer una URL."
                     ),
                     "parameters": {
                         "type": "object",
@@ -435,6 +493,36 @@ class Agent:
                             },
                         },
                         "required": ["query"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_fetch",
+                    "description": (
+                        "Descarga una página web y devuelve el texto "
+                        "legible de su contenido. Úsala DESPUÉS de "
+                        "web_search para leer una URL concreta."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": (
+                                    "URL completa (http/https)."
+                                ),
+                            },
+                            "max_chars": {
+                                "type": "integer",
+                                "default": 8000,
+                                "minimum": 500,
+                                "maximum": 30000,
+                            },
+                        },
+                        "required": ["url"],
                     },
                 },
             },
@@ -1170,8 +1258,8 @@ class Agent:
                 "function": {
                     "name": "generate_image",
                     "description": (
-                        "Genera una imagen mediante FLUX usando una "
-                        "de las claves configuradas."
+                        "Genera una imagen a partir de un prompt de "
+                        "texto. Devuelve una URL a la imagen."
                     ),
                     "parameters": {
                         "type": "object",
@@ -1201,6 +1289,12 @@ class Agent:
                 return await self.files.web_search(
                     args["query"],
                     int(args.get("max_results", 5)),
+                )
+
+            if name == "web_fetch":
+                return await self.files.web_fetch(
+                    args["url"],
+                    int(args.get("max_chars", 8000)),
                 )
 
             # ------------------------- ARCHIVOS -------------------------
@@ -1600,7 +1694,7 @@ class Agent:
                 return data
 
     # ==================================================================
-    # FLUX
+    # GENERACIÓN DE IMAGEN (OpenRouter + fallback Pollinations)
     # ==================================================================
 
     async def generate_image(
@@ -1608,87 +1702,134 @@ class Agent:
         prompt: str,
     ) -> dict[str, Any]:
 
-        if not self._flux_keys:
-            return {"error": "No hay ninguna clave FLUX configurada."}
+        if not prompt or not prompt.strip():
+            return {"error": "prompt vacío"}
 
-        key = self._flux_keys[0]
-        self._flux_keys.rotate(-1)
+        prompt = prompt.strip()
+        last_error: str | None = None
 
-        base = config.flux_base_url.rstrip("/")
+        # --- 1) Intentar OpenRouter (chat con modalities imagen) ---
+        if config.openrouter_api_keys:
+
+            for model in self.IMAGE_MODELS:
+
+                for api_key in config.openrouter_api_keys:
+
+                    try:
+                        result = await self._openrouter_image(
+                            prompt, model, api_key
+                        )
+
+                        if result.get("image_url"):
+                            return result
+
+                        last_error = result.get("error") or last_error
+
+                    except Exception as exc:
+                        last_error = (
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        continue
+
+        # --- 2) Fallback: Pollinations (sin clave) ---
+        try:
+            url = self._pollinations_url(prompt)
+            return {
+                "image_url": url,
+                "provider": "pollinations",
+                "note": (
+                    "OpenRouter no devolvió imagen; "
+                    "usé Pollinations como respaldo."
+                ),
+            }
+        except Exception as exc:
+            return {
+                "error": (
+                    "No se pudo generar imagen. "
+                    f"OpenRouter: {last_error}. "
+                    f"Pollinations: {exc}"
+                )
+            }
+
+    async def _openrouter_image(
+        self,
+        prompt: str,
+        model: str,
+        api_key: str,
+    ) -> dict[str, Any]:
+
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "modalities": ["image", "text"],
+        }
 
         headers = {
-            "accept": "application/json",
-            "x-key": key,
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "HTTP-Referer": "https://subtom.local",
+            "X-Title": "Subtom IA",
         }
 
         timeout = aiohttp.ClientTimeout(total=120)
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
-
             async with session.post(
-                f"{base}/{config.flux_endpoint}",
+                "https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
-                json={"prompt": prompt},
-            ) as response:
+                json=payload,
+            ) as resp:
 
-                data = await response.json(content_type=None)
+                data = await resp.json(content_type=None)
 
-                if response.status >= 400:
+                if resp.status >= 400:
                     return {
-                        "error": f"FLUX HTTP {response.status}",
-                        "detail": data,
+                        "error": f"HTTP {resp.status}: {str(data)[:300]}"
                     }
 
-                task_id = data.get("id") or data.get("task_id")
+                choices = data.get("choices") or []
+                if not choices:
+                    return {"error": "sin choices"}
 
-            if not task_id:
-                return {"result": data}
+                message = choices[0].get("message") or {}
+                images = message.get("images") or []
 
-            for _ in range(60):
+                for img in images:
+                    if not isinstance(img, dict):
+                        continue
 
-                await asyncio.sleep(2)
+                    url = None
+                    img_field = img.get("image_url")
 
-                async with session.get(
-                    f"{base}/get_result?id={task_id}",
-                    headers=headers,
-                ) as response:
+                    if isinstance(img_field, dict):
+                        url = img_field.get("url")
+                    elif isinstance(img_field, str):
+                        url = img_field
+                    else:
+                        url = img.get("url")
 
-                    result = await response.json(content_type=None)
-
-                    if response.status >= 400:
+                    if url:
                         return {
-                            "error": (
-                                "FLUX polling HTTP "
-                                f"{response.status}"
-                            ),
-                            "detail": result,
+                            "image_url": url,
+                            "model": model,
+                            "provider": "openrouter",
                         }
 
-                    status = str(result.get("status", "")).lower()
+        return {"error": "respuesta sin imagen"}
 
-                    if status in {"ready", "succeeded", "completed"}:
-                        nested = result.get("result")
-                        sample = None
-
-                        if isinstance(nested, dict):
-                            sample = nested.get("sample")
-
-                        if not sample:
-                            sample = result.get("sample")
-
-                        if sample:
-                            return {"image_url": sample}
-
-                        return {"result": result}
-
-                    if status in {"failed", "error"}:
-                        return {
-                            "error": "La generación de imagen falló.",
-                            "detail": result,
-                        }
-
-            return {"error": "La generación de imagen tardó demasiado."}
+    @staticmethod
+    def _pollinations_url(prompt: str) -> str:
+        from urllib.parse import quote
+        return (
+            "https://image.pollinations.ai/prompt/"
+            + quote(prompt, safe="")
+            + "?width=1024&height=1024&nologo=true"
+        )
 
     # ==================================================================
     # CHAT / TOOL LOOP CON FALLBACK DE MODELOS
@@ -1841,11 +1982,25 @@ class Agent:
 
                 last_error = exc
 
-                print(
-                    f"[FALLBACK] Modelo '{modelo_actual}' "
-                    f"falló: {type(exc).__name__}: "
-                    f"{str(exc)[:200]}. Probando siguiente..."
-                )
+                err_txt = str(exc).lower()
+
+                # Detectar si el fallo fue por la imagen
+                if (
+                    "image" in err_txt
+                    or "vision" in err_txt
+                    or "multimodal" in err_txt
+                    or "modality" in err_txt
+                ):
+                    print(
+                        f"[VISION] Modelo '{modelo_actual}' "
+                        f"rechazó la imagen. Probando siguiente."
+                    )
+                else:
+                    print(
+                        f"[FALLBACK] Modelo '{modelo_actual}' "
+                        f"falló: {type(exc).__name__}: "
+                        f"{str(exc)[:200]}"
+                    )
 
                 continue
 
