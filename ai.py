@@ -24,111 +24,36 @@ IMAGE_EXTENSIONS = {
 
 class Agent:
 
-    # ==================================================================
-    # RESPALDO ESTÁTICO DE VISIÓN
-    # ==================================================================
-
     VISION_MODELS = [
-        "google/gemini-2.0-flash-exp:free",
-        "google/gemini-2.0-flash-thinking-exp:free",
-        "qwen/qwen-2-vl-7b-instruct:free",
-        "qwen/qwen-2-vl-72b-instruct:free",
-        "qwen/qwen2.5-vl-72b-instruct:free",
-        "meta-llama/llama-3.2-11b-vision-instruct:free",
-        "meta-llama/llama-3.2-90b-vision-instruct:free",
-        "microsoft/phi-3.5-vision-instruct:free",
+        "llama-3.2-11b-vision-preview",
+        "llama-3.2-90b-vision-preview",
     ]
-
-    # ==================================================================
-    # MODELOS DE CÓDIGO
-    # ==================================================================
 
     CODE_MODELS = [
-        "qwen/qwen3-coder:free",
-        "qwen/qwen3.6-plus:free",
-        "minimax/minimax-m2.5:free",
-        "minimax/minimax-m2.7:free",
-        "cohere/north-mini-code:free",
-        "z-ai/glm-4.5-air:free",
-        "stepfun/step-3.5-flash:free",
-        "arcee-ai/trinity-large-preview:free",
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "openai/gpt-oss-120b:free",
-        "openai/gpt-oss-20b:free",
-        "qwen/qwen3-next-80b-a3b-instruct:free",
-        "qwen/qwen3-32b:free",
-        "qwen/qwen3-235b-a22b:free",
-        "qwen/qwen3-30b-a3b:free",
-        "qwen/qwen3-14b:free",
-        "qwen/qwen3-8b:free",
-        "deepseek/deepseek-v4-flash:free",
-        "deepseek/deepseek-v4-pro:free",
-        "deepseek/deepseek-chat-v3.1:free",
-        "deepseek/deepseek-r1:free",
-        "mistralai/devstral-small:free",
-        "nex-agi/nex-n2.5-pro:free",
-        "poolside/laguna-xs-2.1:free",
-        "poolside/laguna-s-2.1:free",
-        "liquid/lfm-2.5-1.2b-thinking:free",
-        "nvidia/nemotron-3.5-lightning:free",
-        "qwen/qwen3.5-9b:free",
-        "microsoft/phi-4:free",
-        "google/gemma-3-27b-it:free",
-        "google/gemma-3-12b-it:free",
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "meta-llama/llama-3.1-8b-instruct:free",
+        "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3-32b",
+        "deepseek-r1-distill-llama-70b",
+        "moonshotai/kimi-k2-instruct",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "meta-llama/llama-4-maverick-17b-128e-instruct",
     ]
-
-    # ==================================================================
-    # MODELOS DE TEXTO
-    # ==================================================================
 
     TEXT_MODELS = [
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "google/gemma-4-31b-it:free",
-        "google/gemma-4-26b-a4b-it:free",
-        "minimax/minimax-m2.7:free",
-        "minimax/minimax-m3:free",
-        "deepseek/deepseek-r1:free",
-        "deepseek/deepseek-chat-v3.1:free",
-        "z-ai/glm-4.5-air:free",
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "meta-llama/llama-3.1-8b-instruct:free",
-        "stepfun/step-3.5-flash:free",
-        "arcee-ai/trinity-large-preview:free",
-        "openai/gpt-oss-120b:free",
-        "openai/gpt-oss-20b:free",
-        "qwen/qwen3-next-80b-a3b-instruct:free",
-        "qwen/qwen3.6-plus:free",
-        "deepseek/deepseek-r1-0528:free",
-        "deepseek/deepseek-v4-flash:free",
-        "google/gemma-3-27b-it:free",
-        "google/gemma-3-12b-it:free",
-        "qwen/qwen3-32b:free",
-        "qwen/qwen3-235b-a22b:free",
-        "qwen/qwen3-30b-a3b:free",
-        "qwen/qwen3-14b:free",
-        "qwen/qwen3-8b:free",
-        "microsoft/phi-4:free",
-        "mistralai/mistral-small-3.1-24b-instruct:free",
-        "liquid/lfm-2.5-2.6b:free",
-        "poolside/laguna-m.1:free",
-        "tngtech/deepseek-r1t2-chimera:free",
-        "tngtech/deepseek-r1t-chimera:free",
-        "cognitivecomputations/dolphin3.0-mistral-24b:free",
-        "gryphe/mythomax-l2-13b:free",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3-32b",
+        "moonshotai/kimi-k2-instruct",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "meta-llama/llama-4-maverick-17b-128e-instruct",
+        "gemma2-9b-it",
     ]
-
-    # ==================================================================
-    # INIT
-    # ==================================================================
 
     def __init__(self) -> None:
         self.pool: asyncpg.Pool | None = None
-
         self.files = FileTools(config.workspace)
-
         self._vision_models: list[str] = []
         self._vision_loaded: bool = False
 
@@ -141,10 +66,6 @@ class Agent:
             )
             if key
         )
-
-    # ==================================================================
-    # BASE DE DATOS / MEMORIA
-    # ==================================================================
 
     async def init(self) -> None:
         self.pool = await asyncpg.create_pool(
@@ -245,116 +166,53 @@ class Agent:
             for row in rows
         ]
 
-    # ==================================================================
-    # DETECCIÓN DINÁMICA DE MODELOS CON VISIÓN
-    # ==================================================================
-
     async def _refresh_vision_models(self) -> None:
-        try:
-            timeout = aiohttp.ClientTimeout(total=20)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(
-                    "https://openrouter.ai/api/v1/models"
-                ) as resp:
-                    data = await resp.json(content_type=None)
-        except Exception as exc:
-            print(
-                f"[VISION] No se pudo cargar lista de modelos: {exc}. "
-                f"Usando lista estática como respaldo."
-            )
-            self._vision_models = list(self.VISION_MODELS)
-            self._vision_loaded = False
-            return
-
-        models = data.get("data") or []
-        vision_free: list[str] = []
-
-        for m in models:
-            model_id = m.get("id", "")
-            if not model_id.endswith(":free"):
-                continue
-            arch = m.get("architecture") or {}
-            input_mods = arch.get("input_modalities") or []
-            if "image" in input_mods:
-                vision_free.append(model_id)
-
-        if not vision_free:
-            print(
-                "[VISION] OpenRouter no devolvió modelos free con visión. "
-                "Usando lista estática."
-            )
-            self._vision_models = list(self.VISION_MODELS)
-            self._vision_loaded = False
-            return
-
-        self._vision_models = vision_free
-        self._vision_loaded = True
-        print(f"[VISION] {len(vision_free)} modelos :free con visión detectados:")
-        for mid in vision_free[:10]:
-            print(f"  - {mid}")
-        if len(vision_free) > 10:
-            print(f"  ... y {len(vision_free) - 10} más")
-
-    # ==================================================================
-    # DETECCIÓN DINÁMICA DE MODELOS FREE (TEXTO / CÓDIGO)
-    # ==================================================================
+        self._vision_models = list(self.VISION_MODELS)
+        self._vision_loaded = False
+        print(
+            f"[VISION] Groq: usando lista estática "
+            f"({len(self._vision_models)} modelos)"
+        )
 
     async def _refresh_free_models(self) -> None:
-        """
-        Consulta OpenRouter y actualiza las listas de modelos free
-        que EXISTEN actualmente. Filtra los que ya no están.
-        """
         try:
             timeout = aiohttp.ClientTimeout(total=20)
+            headers = {
+                "Authorization": f"Bearer {config.groq_api_key}",
+            }
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(
-                    "https://openrouter.ai/api/v1/models"
+                    f"{config.groq_base_url}/models",
+                    headers=headers,
                 ) as resp:
+                    if resp.status != 200:
+                        print(f"[MODELS] Groq /models HTTP {resp.status}")
+                        return
                     data = await resp.json(content_type=None)
         except Exception as exc:
             print(f"[MODELS] No se pudo refrescar lista: {exc}")
             return
 
         models = data.get("data") or []
-
-        free_ids: set[str] = set()
+        valid_ids: set[str] = set()
         for m in models:
-            model_id = m.get("id", "")
-            if model_id.endswith(":free"):
-                free_ids.add(model_id)
+            mid = m.get("id", "")
+            if mid:
+                valid_ids.add(mid)
 
-        if not free_ids:
-            print("[MODELS] OpenRouter no devolvió modelos :free")
+        if not valid_ids:
             return
 
         old_code = len(self.CODE_MODELS)
         old_text = len(self.TEXT_MODELS)
 
-        self.CODE_MODELS = [
-            m for m in self.CODE_MODELS if m in free_ids
-        ]
-        self.TEXT_MODELS = [
-            m for m in self.TEXT_MODELS if m in free_ids
-        ]
-
-        # Añadir modelos nuevos que aparezcan
-        for mid in free_ids:
-            if mid in self.CODE_MODELS or mid in self.TEXT_MODELS:
-                continue
-            lower = mid.lower()
-            if any(k in lower for k in ("coder", "code", "devstral", "laguna")):
-                self.CODE_MODELS.append(mid)
-            else:
-                self.TEXT_MODELS.append(mid)
+        self.CODE_MODELS = [m for m in self.CODE_MODELS if m in valid_ids]
+        self.TEXT_MODELS = [m for m in self.TEXT_MODELS if m in valid_ids]
 
         print(
             f"[MODELS] CODE: {old_code}→{len(self.CODE_MODELS)} | "
             f"TEXT: {old_text}→{len(self.TEXT_MODELS)}"
         )
-
-    # ==================================================================
-    # VISIÓN
-    # ==================================================================
 
     def _extract_image_paths(self, prompt: str) -> list[str]:
         paths: list[str] = []
@@ -396,7 +254,7 @@ class Agent:
                 if info["size"] > 20 * 1024 * 1024:
                     content.append({
                         "type": "text",
-                        "text": f"[Imagen omitida por tamaño >20MB: {info['filename']}]",
+                        "text": f"[Imagen omitida >20MB: {info['filename']}]",
                     })
                     continue
                 content.append({
@@ -406,13 +264,9 @@ class Agent:
             except Exception as exc:
                 content.append({
                     "type": "text",
-                    "text": f"[No se pudo cargar imagen {path}: {exc}]",
+                    "text": f"[No se pudo cargar {path}: {exc}]",
                 })
         return content
-
-    # ==================================================================
-    # SELECCIÓN DE MODELO SEGÚN LA TAREA
-    # ==================================================================
 
     def _select_model(
         self,
@@ -426,16 +280,11 @@ class Agent:
         if task == TaskType.IMAGE_READ:
             return vision_list
         if task == TaskType.CODE:
-            return motor.pick_models(self.CODE_MODELS, task, top=5)
-        return motor.pick_models(self.TEXT_MODELS, task, top=5)
-
-    # ==================================================================
-    # DEFINICIÓN DE HERRAMIENTAS
-    # ==================================================================
+            return motor.pick_models(self.CODE_MODELS, task, top=4)
+        return motor.pick_models(self.TEXT_MODELS, task, top=4)
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
-            # ------------------------- BÚSQUEDA WEB -------------------------
             {
                 "type": "function",
                 "function": {
@@ -466,8 +315,7 @@ class Agent:
                     "name": "web_fetch",
                     "description": (
                         "Descarga una página web y devuelve el texto "
-                        "legible de su contenido. Úsala DESPUÉS de "
-                        "web_search para leer una URL concreta."
+                        "legible. Úsala después de web_search."
                     ),
                     "parameters": {
                         "type": "object",
@@ -484,12 +332,11 @@ class Agent:
                     },
                 },
             },
-            # ------------------------- ARCHIVOS -------------------------
             {
                 "type": "function",
                 "function": {
                     "name": "file_list",
-                    "description": "Lista archivos y carpetas del workspace.",
+                    "description": "Lista archivos del workspace.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -502,7 +349,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_read",
-                    "description": "Lee un archivo de texto del workspace.",
+                    "description": "Lee un archivo de texto.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -514,7 +361,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_write",
-                    "description": "Crea o reemplaza un archivo de texto.",
+                    "description": "Crea o reemplaza un archivo.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -529,7 +376,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_append",
-                    "description": "Añade contenido al final de un archivo.",
+                    "description": "Añade al final de un archivo.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -559,7 +406,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_info",
-                    "description": "Info de un archivo o carpeta.",
+                    "description": "Info de un archivo.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -582,38 +429,8 @@ class Agent:
             {
                 "type": "function",
                 "function": {
-                    "name": "file_copy",
-                    "description": "Copia un archivo o carpeta.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "source": {"type": "string"},
-                            "destination": {"type": "string"},
-                        },
-                        "required": ["source", "destination"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_move",
-                    "description": "Mueve o renombra un archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "source": {"type": "string"},
-                            "destination": {"type": "string"},
-                        },
-                        "required": ["source", "destination"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
                     "name": "file_delete",
-                    "description": "Elimina un archivo o carpeta.",
+                    "description": "Borra un archivo o carpeta.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -627,65 +444,37 @@ class Agent:
             {
                 "type": "function",
                 "function": {
-                    "name": "create_zip",
-                    "description": "Crea un ZIP.",
+                    "name": "file_tree",
+                    "description": "Árbol del workspace.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "output_zip": {"type": "string"},
-                            "sources": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
+                            "path": {"type": "string", "default": "."},
+                            "max_depth": {"type": "integer", "default": 3},
                         },
-                        "required": ["output_zip", "sources"],
                     },
                 },
             },
             {
                 "type": "function",
                 "function": {
-                    "name": "list_zip",
-                    "description": "Lista contenido de un ZIP.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"zip_name": {"type": "string"}},
-                        "required": ["zip_name"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "unzip_file",
-                    "description": "Extrae un ZIP.",
+                    "name": "file_grep",
+                    "description": "Busca texto en archivos.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "zip_name": {"type": "string"},
-                            "destination": {"type": "string", "default": "."},
+                            "pattern": {"type": "string"},
+                            "path": {"type": "string", "default": "."},
                         },
-                        "required": ["zip_name"],
+                        "required": ["pattern"],
                     },
                 },
             },
             {
                 "type": "function",
                 "function": {
-                    "name": "file_detect_kind",
-                    "description": "Detecta tipo de archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_read_any",
-                    "description": "Lee cualquier archivo y devuelve algo útil.",
+                    "name": "file_backup",
+                    "description": "Backup con timestamp.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -705,255 +494,6 @@ class Agent:
                     },
                 },
             },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_read_text",
-                    "description": "Lee archivo de texto detectando encoding.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_image_info",
-                    "description": "Info de una imagen.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_tree",
-                    "description": "Árbol recursivo del workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "default": "."},
-                            "max_depth": {"type": "integer", "default": 3},
-                        },
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_grep",
-                    "description": "Busca texto en archivos del workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "pattern": {"type": "string"},
-                            "path": {"type": "string", "default": "."},
-                            "extensions": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                        },
-                        "required": ["pattern"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_head",
-                    "description": "Primeras N líneas de un archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "lines": {"type": "integer", "default": 20},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_tail",
-                    "description": "Últimas N líneas de un archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "lines": {"type": "integer", "default": 20},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_count_lines",
-                    "description": "Cuenta líneas de un archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_replace",
-                    "description": "Reemplaza texto en un archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "old": {"type": "string"},
-                            "new": {"type": "string"},
-                            "count": {"type": "integer", "default": -1},
-                        },
-                        "required": ["path", "old", "new"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_hash",
-                    "description": "Hash de un archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "algorithm": {"type": "string", "default": "sha256"},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_exists",
-                    "description": "Comprueba si existe una ruta.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_backup",
-                    "description": "Copia de seguridad con timestamp.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_image_resize",
-                    "description": "Redimensiona una imagen.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "output": {"type": "string"},
-                            "width": {"type": "integer"},
-                            "height": {"type": "integer"},
-                            "keep_aspect": {"type": "boolean", "default": True},
-                        },
-                        "required": ["path", "output", "width"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_image_thumbnail",
-                    "description": "Thumbnail de una imagen.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "output": {"type": "string"},
-                            "size": {"type": "integer", "default": 256},
-                        },
-                        "required": ["path", "output"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_image_convert",
-                    "description": "Convierte formato de imagen.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "output": {"type": "string"},
-                            "format": {"type": "string"},
-                        },
-                        "required": ["path", "output"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_read_json",
-                    "description": "Lee un JSON.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_write_json",
-                    "description": "Escribe un JSON.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "data": {},
-                            "indent": {"type": "integer", "default": 2},
-                        },
-                        "required": ["path", "data"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_read_csv",
-                    "description": "Lee CSV como lista de dicts.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "max_rows": {"type": "integer"},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            # ------------------------- GITHUB -------------------------
             {
                 "type": "function",
                 "function": {
@@ -997,17 +537,16 @@ class Agent:
             {
                 "type": "function",
                 "function": {
-                    "name": "github_upload_file",
-                    "description": "Sube archivo (texto o binario) a GitHub.",
+                    "name": "github_create_repo",
+                    "description": "Crea un repo en GitHub.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "repo": {"type": "string"},
-                            "repo_path": {"type": "string"},
-                            "local_path": {"type": "string"},
-                            "message": {"type": "string"},
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "private": {"type": "boolean", "default": False},
                         },
-                        "required": ["repo", "repo_path", "local_path", "message"],
+                        "required": ["name"],
                     },
                 },
             },
@@ -1015,7 +554,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "github_upload_project",
-                    "description": "Sube varios archivos en UN commit.",
+                    "description": "Sube varios archivos en un commit.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1031,23 +570,6 @@ class Agent:
             {
                 "type": "function",
                 "function": {
-                    "name": "github_create_repo",
-                    "description": "Crea un repo en GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "description": {"type": "string"},
-                            "private": {"type": "boolean", "default": False},
-                        },
-                        "required": ["name"],
-                    },
-                },
-            },
-            # ------------------------- VERCEL -------------------------
-            {
-                "type": "function",
-                "function": {
                     "name": "vercel_projects",
                     "description": "Lista proyectos Vercel.",
                     "parameters": {"type": "object", "properties": {}},
@@ -1057,31 +579,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "vercel_deployments",
-                    "description": "Lista deployments de un proyecto.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"project": {"type": "string"}},
-                        "required": ["project"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_project_info",
-                    "description": "Info de un proyecto Vercel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"project": {"type": "string"}},
-                        "required": ["project"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_list_envs",
-                    "description": "Lista envs de un proyecto.",
+                    "description": "Deployments de un proyecto.",
                     "parameters": {
                         "type": "object",
                         "properties": {"project": {"type": "string"}},
@@ -1100,10 +598,6 @@ class Agent:
                             "project": {"type": "string"},
                             "key": {"type": "string"},
                             "value": {"type": "string"},
-                            "target": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
                         },
                         "required": ["project", "key", "value"],
                     },
@@ -1113,7 +607,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "vercel_redeploy",
-                    "description": "Redeploy de un proyecto Vercel.",
+                    "description": "Redeploy de un proyecto.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1124,22 +618,6 @@ class Agent:
                     },
                 },
             },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_build_logs",
-                    "description": "Logs del último deployment.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "project": {"type": "string"},
-                            "limit": {"type": "integer", "default": 100},
-                        },
-                        "required": ["project"],
-                    },
-                },
-            },
-            # ------------------------- IMAGEN -------------------------
             {
                 "type": "function",
                 "function": {
@@ -1154,23 +632,13 @@ class Agent:
             },
         ]
 
-    # ==================================================================
-    # EJECUCIÓN DE HERRAMIENTAS
-    # ==================================================================
-
-    async def run_tool(
-        self,
-        name: str,
-        args: dict[str, Any],
-    ) -> dict[str, Any]:
+    async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
-            # --- BÚSQUEDA WEB ---
             if name == "web_search":
                 return await self._cached_search(args)
             if name == "web_fetch":
                 return await self._cached_fetch(args)
 
-            # --- ARCHIVOS ---
             if name == "file_list":
                 return {"files": self.files.list_files(args.get("path", "."))}
             if name == "file_read":
@@ -1185,65 +653,17 @@ class Agent:
                 return self.files.info(args["path"])
             if name == "file_mkdir":
                 return {"path": self.files.mkdir(args["path"])}
-            if name == "file_copy":
-                return {"path": self.files.copy(args["source"], args["destination"])}
-            if name == "file_move":
-                return {"path": self.files.move(args["source"], args["destination"])}
             if name == "file_delete":
                 return {"deleted": self.files.delete(args["path"], args.get("recursive", False))}
-            if name == "create_zip":
-                return {"path": self.files.zip_create(args["output_zip"], args["sources"])}
-            if name == "list_zip":
-                return {"files": self.files.zip_list(args["zip_name"])}
-            if name == "unzip_file":
-                return {"extracted": self.files.zip_extract(args["zip_name"], args.get("destination", "."))}
-            if name == "file_detect_kind":
-                return {"kind": self.files.detect_kind(args["path"])}
-            if name == "file_read_any":
-                data = self.files.read_any(args["path"])
-                if isinstance(data, dict):
-                    data.pop("base64", None)
-                    data.pop("data_url", None)
-                return data
-            if name == "file_read_pdf":
-                return {"text": self.files.read_pdf_text(args["path"])}
-            if name == "file_read_text":
-                return {"text": self.files.read_text_auto(args["path"])}
-            if name == "file_image_info":
-                return self.files.image_info(args["path"])
             if name == "file_tree":
                 return self.files.tree(args.get("path", "."), int(args.get("max_depth", 3)))
             if name == "file_grep":
-                return {"results": self.files.grep(args["pattern"], args.get("path", "."), args.get("extensions"))}
-            if name == "file_head":
-                return {"text": self.files.head_file(args["path"], int(args.get("lines", 20)))}
-            if name == "file_tail":
-                return {"text": self.files.tail_file(args["path"], int(args.get("lines", 20)))}
-            if name == "file_count_lines":
-                return {"lines": self.files.count_lines(args["path"])}
-            if name == "file_replace":
-                return self.files.replace_in_file(args["path"], args["old"], args["new"], int(args.get("count", -1)))
-            if name == "file_hash":
-                return self.files.file_hash(args["path"], args.get("algorithm", "sha256"))
-            if name == "file_exists":
-                return {"exists": self.files.exists(args["path"])}
+                return {"results": self.files.grep(args["pattern"], args.get("path", "."), None)}
             if name == "file_backup":
                 return {"backup": self.files.backup(args["path"])}
-            if name == "file_image_resize":
-                return {"path": self.files.image_resize(args["path"], args["output"], int(args["width"]), int(args["height"]) if args.get("height") else None, bool(args.get("keep_aspect", True)))}
-            if name == "file_image_thumbnail":
-                return {"path": self.files.image_thumbnail(args["path"], args["output"], int(args.get("size", 256)))}
-            if name == "file_image_convert":
-                return {"path": self.files.image_convert(args["path"], args["output"], args.get("format"))}
-            if name == "file_read_json":
-                return {"data": self.files.read_json(args["path"])}
-            if name == "file_write_json":
-                return {"path": self.files.write_json(args["path"], args["data"], int(args.get("indent", 2)))}
-            if name == "file_read_csv":
-                max_rows = args.get("max_rows")
-                return {"rows": self.files.read_csv(args["path"], int(max_rows) if max_rows else None)}
+            if name == "file_read_pdf":
+                return {"text": self.files.read_pdf_text(args["path"])}
 
-            # --- GITHUB ---
             if name == "github_list":
                 return await self.github_request("GET", "/user/repos?per_page=100")
             if name == "github_read":
@@ -1252,31 +672,21 @@ class Agent:
                 return await self.github_request("GET", f"/repos/{repo}/contents/{path}")
             if name == "github_write":
                 return await self.github_write(args)
-            if name == "github_upload_file":
-                return await self.github_upload_file(args)
-            if name == "github_upload_project":
-                return await self.github_upload_project(args)
             if name == "github_create_repo":
                 return await self.github_create_repo(args)
+            if name == "github_upload_project":
+                return await self.github_upload_project(args)
 
-            # --- VERCEL ---
             if name == "vercel_projects":
                 return await self.vercel_request("GET", "/v9/projects?limit=100")
             if name == "vercel_deployments":
                 project = aiohttp.helpers.quote(args["project"], safe="")
                 return await self.vercel_request("GET", f"/v6/deployments?projectId={project}&limit=20")
-            if name == "vercel_project_info":
-                return await self.vercel_project_info(args)
-            if name == "vercel_list_envs":
-                return await self.vercel_list_envs(args)
             if name == "vercel_set_env":
                 return await self.vercel_set_env(args)
             if name == "vercel_redeploy":
                 return await self.vercel_redeploy(args)
-            if name == "vercel_build_logs":
-                return await self.vercel_build_logs(args)
 
-            # --- IMAGEN ---
             if name == "generate_image":
                 return await self.generate_image(args["prompt"])
 
@@ -1284,10 +694,6 @@ class Agent:
 
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {str(exc)[:2000]}"}
-
-    # ==================================================================
-    # WRAPPERS CON CACHE
-    # ==================================================================
 
     async def _cached_search(self, args: dict[str, Any]) -> dict[str, Any]:
         query = args.get("query", "")
@@ -1315,16 +721,7 @@ class Agent:
             motor.cache_set_fetch(f"{url}::{max_chars}", result)
         return result
 
-    # ==================================================================
-    # GITHUB
-    # ==================================================================
-
-    async def github_request(
-        self,
-        method: str,
-        path: str,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
+    async def github_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         if not config.github_token:
             return {"error": "GITHUB_TOKEN no está configurado."}
         headers = {
@@ -1347,7 +744,7 @@ class Agent:
 
     async def github_write(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.github_token:
-            return {"error": "GITHUB_TOKEN no está configurado."}
+            return {"error": "GITHUB_TOKEN no configurado."}
         repo = args["repo"].strip("/")
         path = args["path"].lstrip("/")
         content = base64.b64encode(args["content"].encode("utf-8")).decode("ascii")
@@ -1376,42 +773,27 @@ class Agent:
                     return {"error": f"GitHub HTTP {response.status}", "detail": data}
                 return data
 
-    async def github_upload_file(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def github_create_repo(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.github_token:
             return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        repo_path = args["repo_path"].lstrip("/")
-        local_path = args["local_path"]
-        message = args["message"]
-        try:
-            full = self.files._path(local_path)
-            if not full.is_file():
-                return {"error": f"No existe: {local_path}"}
-            raw = full.read_bytes()
-        except Exception as exc:
-            return {"error": f"Error leyendo {local_path}: {exc}"}
-        b64 = base64.b64encode(raw).decode("ascii")
-        url = f"https://api.github.com/repos/{repo}/contents/{repo_path}"
+        payload = {
+            "name": args["name"],
+            "description": args.get("description", ""),
+            "private": bool(args.get("private", False)),
+            "auto_init": True,
+        }
         headers = {
             "Authorization": f"Bearer {config.github_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        timeout = aiohttp.ClientTimeout(total=120)
+        timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            sha = None
-            async with session.get(url, headers=headers) as resp:
-                if resp.status == 200:
-                    existing = await resp.json(content_type=None)
-                    sha = existing.get("sha")
-            payload = {"message": message, "content": b64}
-            if sha:
-                payload["sha"] = sha
-            async with session.put(url, headers=headers, json=payload) as resp:
+            async with session.post("https://api.github.com/user/repos", headers=headers, json=payload) as resp:
                 data = await resp.json(content_type=None)
                 if resp.status >= 400:
-                    return {"error": f"GitHub HTTP {resp.status}", "detail": data}
-                return {"path": repo_path, "size": len(raw), "url": data.get("content", {}).get("html_url")}
+                    return {"error": f"HTTP {resp.status}", "detail": data}
+                return {"name": data.get("full_name"), "url": data.get("html_url")}
 
     async def github_upload_project(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.github_token:
@@ -1432,7 +814,7 @@ class Agent:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(f"{base}/git/refs/heads/{branch}", headers=headers) as resp:
                 if resp.status == 404:
-                    return {"error": f"La rama '{branch}' no existe. Crea el repo con un README primero."}
+                    return {"error": f"La rama '{branch}' no existe."}
                 ref = await resp.json(content_type=None)
                 parent_sha = ref["object"]["sha"]
             async with session.get(f"{base}/git/commits/{parent_sha}", headers=headers) as resp:
@@ -1458,7 +840,7 @@ class Agent:
                 tree_items.append({"path": repo_path.lstrip("/"), "mode": "100644", "type": "blob", "sha": sha_blob})
                 uploaded.append({"repo_path": repo_path, "size": len(raw)})
             if not tree_items:
-                return {"error": "Ningún archivo válido para subir."}
+                return {"error": "Ningún archivo válido."}
             async with session.post(f"{base}/git/trees", headers=headers, json={"base_tree": parent_tree, "tree": tree_items}) as resp:
                 tree = await resp.json(content_type=None)
                 if resp.status >= 400:
@@ -1473,37 +855,11 @@ class Agent:
                 if resp.status >= 400:
                     detail = await resp.text()
                     return {"error": f"Ref falló: {detail[:500]}"}
-            return {"repo": repo, "branch": branch, "commit": commit_sha, "files_uploaded": len(uploaded), "files": uploaded}
-
-    async def github_create_repo(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        payload = {
-            "name": args["name"],
-            "description": args.get("description", ""),
-            "private": bool(args.get("private", False)),
-            "auto_init": True,
-        }
-        headers = {
-            "Authorization": f"Bearer {config.github_token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post("https://api.github.com/user/repos", headers=headers, json=payload) as resp:
-                data = await resp.json(content_type=None)
-                if resp.status >= 400:
-                    return {"error": f"HTTP {resp.status}", "detail": data}
-                return {"name": data.get("full_name"), "url": data.get("html_url"), "clone_url": data.get("clone_url")}
-
-    # ==================================================================
-    # VERCEL
-    # ==================================================================
+            return {"repo": repo, "branch": branch, "commit": commit_sha, "files_uploaded": len(uploaded)}
 
     async def vercel_request(self, method: str, path: str) -> dict[str, Any]:
         if not config.vercel_token:
-            return {"error": "VERCEL_TOKEN no está configurado."}
+            return {"error": "VERCEL_TOKEN no configurado."}
         headers = {"Authorization": f"Bearer {config.vercel_token}"}
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -1521,42 +877,13 @@ class Agent:
             return data["id"]
         return None
 
-    async def vercel_project_info(self, args: dict[str, Any]) -> dict[str, Any]:
-        project = args["project"]
-        data = await self.vercel_request("GET", f"/v9/projects/{project}")
-        if not isinstance(data, dict) or data.get("error"):
-            return data
-        return {
-            "id": data.get("id"),
-            "name": data.get("name"),
-            "framework": data.get("framework"),
-            "url": f"https://{data.get('name')}.vercel.app" if data.get("name") else None,
-        }
-
-    async def vercel_list_envs(self, args: dict[str, Any]) -> dict[str, Any]:
-        project = args["project"]
-        pid = await self._vercel_project_id(project)
-        if not pid:
-            return {"error": f"Proyecto '{project}' no encontrado."}
-        data = await self.vercel_request("GET", f"/v9/projects/{pid}/env")
-        if not isinstance(data, dict):
-            return data
-        envs = data.get("envs", [])
-        return {
-            "count": len(envs),
-            "envs": [
-                {"key": e.get("key"), "target": e.get("target"), "type": e.get("type"), "id": e.get("id")}
-                for e in envs
-            ],
-        }
-
     async def vercel_set_env(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.vercel_token:
             return {"error": "VERCEL_TOKEN no configurado."}
         project = args["project"]
         key = args["key"]
         value = args["value"]
-        target = args.get("target") or ["production", "preview", "development"]
+        target = ["production", "preview", "development"]
         pid = await self._vercel_project_id(project)
         if not pid:
             return {"error": f"Proyecto '{project}' no encontrado."}
@@ -1566,34 +893,15 @@ class Agent:
         }
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            existing_id = None
-            async with session.get(f"https://api.vercel.com/v9/projects/{pid}/env", headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    for e in data.get("envs", []):
-                        if e.get("key") == key:
-                            existing_id = e.get("id")
-                            break
-            if existing_id:
-                async with session.patch(
-                    f"https://api.vercel.com/v9/projects/{pid}/env/{existing_id}",
-                    headers=headers,
-                    json={"value": value, "target": target},
-                ) as resp:
-                    data = await resp.json(content_type=None)
-                    if resp.status >= 400:
-                        return {"error": f"HTTP {resp.status}", "detail": data}
-                    return {"action": "updated", "key": key, "target": target}
-            else:
-                async with session.post(
-                    f"https://api.vercel.com/v10/projects/{pid}/env",
-                    headers=headers,
-                    json={"key": key, "value": value, "target": target, "type": "encrypted"},
-                ) as resp:
-                    data = await resp.json(content_type=None)
-                    if resp.status >= 400:
-                        return {"error": f"HTTP {resp.status}", "detail": data}
-                    return {"action": "created", "key": key, "target": target}
+            async with session.post(
+                f"https://api.vercel.com/v10/projects/{pid}/env",
+                headers=headers,
+                json={"key": key, "value": value, "target": target, "type": "encrypted"},
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status >= 400:
+                    return {"error": f"HTTP {resp.status}", "detail": data}
+                return {"action": "created", "key": key}
 
     async def vercel_redeploy(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.vercel_token:
@@ -1618,33 +926,6 @@ class Agent:
                 if resp.status >= 400:
                     return {"error": f"HTTP {resp.status}", "detail": data}
                 return {"id": data.get("id"), "url": data.get("url"), "status": data.get("status")}
-
-    async def vercel_build_logs(self, args: dict[str, Any]) -> dict[str, Any]:
-        project = args["project"]
-        limit = int(args.get("limit", 100))
-        pid = await self._vercel_project_id(project)
-        if not pid:
-            return {"error": f"Proyecto '{project}' no encontrado."}
-        data = await self.vercel_request("GET", f"/v6/deployments?projectId={pid}&limit=1")
-        deployments = data.get("deployments", []) if isinstance(data, dict) else []
-        if not deployments:
-            return {"error": "Sin deployments."}
-        deploy = deployments[0]
-        deploy_id = deploy.get("uid") or deploy.get("id")
-        data = await self.vercel_request("GET", f"/v2/deployments/{deploy_id}/events?limit={limit}")
-        if not isinstance(data, list):
-            return {"deployment": deploy_id, "events": [], "error": "No se pudieron obtener eventos."}
-        lines = []
-        for ev in data:
-            if ev.get("type") in ("stdout", "stderr"):
-                text = ev.get("payload", {}).get("text", "")
-                if text:
-                    lines.append(text)
-        return {"deployment": deploy_id, "state": deploy.get("state"), "url": deploy.get("url"), "logs": lines[-limit:], "log_count": len(lines)}
-
-    # ==================================================================
-    # GENERACIÓN DE IMAGEN (FLUX)
-    # ==================================================================
 
     async def generate_image(self, prompt: str) -> dict[str, Any]:
         if not prompt or not prompt.strip():
@@ -1689,7 +970,7 @@ class Agent:
                         return {
                             "image_url": sample,
                             "local_path": local_path,
-                            "note": "Imagen guardada localmente. Usa github_upload_file con este local_path para subirla.",
+                            "note": "Imagen guardada. Usa github_upload_file con este local_path.",
                         }
                     if status in {"error", "failed", "request moderated", "content moderated"}:
                         return {"error": f"FLUX falló: {status}", "detail": result}
@@ -1715,10 +996,6 @@ class Agent:
         except Exception as exc:
             print(f"[FLUX] Error descargando imagen: {exc}")
             return None
-
-    # ==================================================================
-    # CHAT / TOOL LOOP
-    # ==================================================================
 
     async def ask(
         self,
@@ -1747,9 +1024,8 @@ class Agent:
             messages.append({
                 "role": "user",
                 "content": (
-                    "Genera una imagen usando la "
-                    "herramienta generate_image "
-                    "para esta petición:\n\n" + prompt
+                    "Genera una imagen usando la herramienta "
+                    "generate_image para esta petición:\n\n" + prompt
                 ),
             })
 
@@ -1837,21 +1113,11 @@ class Agent:
                     or "multimodal" in err_txt
                     or "modality" in err_txt
                 ):
-                    print(
-                        f"[VISION] Modelo '{modelo_actual}' "
-                        f"rechazó la imagen. Probando siguiente."
-                    )
+                    print(f"[VISION] '{modelo_actual}' rechazó imagen. Siguiente.")
                 elif "404" in err_txt or "unavailable" in err_txt:
-                    print(
-                        f"[MODEL-GONE] '{modelo_actual}' ya no existe. "
-                        f"Siguiente."
-                    )
+                    print(f"[MODEL-GONE] '{modelo_actual}' ya no existe. Siguiente.")
                 else:
-                    print(
-                        f"[FALLBACK] Modelo '{modelo_actual}' "
-                        f"falló: {type(exc).__name__}: "
-                        f"{str(exc)[:200]}"
-                    )
+                    print(f"[FALLBACK] '{modelo_actual}' falló: {type(exc).__name__}: {str(exc)[:200]}")
 
                 continue
 
@@ -1861,5 +1127,4 @@ class Agent:
         )
 
 
-# Instancia global.
 agent = Agent()
