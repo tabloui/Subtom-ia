@@ -98,6 +98,8 @@ class Settings:
     # Optional APIs
     github_token: str | None
     vercel_token: str | None
+
+    # FLUX (generación de imágenes)
     flux_api_key_1: str | None
     flux_api_key_2: str | None
     flux_base_url: str
@@ -391,6 +393,10 @@ def load_settings() -> Settings:
             "VERCEL_TOKEN"
         ),
 
+        # ----------------------------------------------------
+        # FLUX (generación de imágenes)
+        # ----------------------------------------------------
+
         flux_api_key_1=_env(
             "FLUX_API_KEY_1"
         ),
@@ -404,9 +410,12 @@ def load_settings() -> Settings:
             "https://api.bfl.ai/v1",
         ),
 
+        # Endpoint oficial de BFL. "flux-schnell" no existe
+        # como endpoint en la API; el correcto es flux-pro-1.1
+        # (también puedes usar flux-2-pro-preview o flux-dev).
         flux_endpoint=_env(
             "FLUX_ENDPOINT",
-            "flux-schnell",
+            "flux-pro-1.1",
         ),
     )
 
