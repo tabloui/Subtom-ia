@@ -104,11 +104,24 @@ class AIConnector:
     # ROTACIÓN DE CLAVES
     # ------------------------------------------------------------------
 
-    def _available_keys(self) -> list[str]:
-        now = asyncio.get_event_loop().time()
+    @staticmethod
+    def _now() -> float:
+        """Tiempo monotónico (evita deprecación de get_event_loop)."""
+        try:
+            return asyncio.get_running_loop().time()
+        except RuntimeError:
+            return asyncio.get_event_loop().time()
+
+    def _available_keys(self) -> list[tuple[int, str]]:
+        """
+        Devuelve lista de (índice_real, clave) que NO están en cooldown,
+        empezando por la última usada con éxito.
+        """
+
+        now = self._now()
         total = len(config.openrouter_api_keys)
 
-        result: list[str] = []
+        result: list[tuple[int, str]] = []
 
         for offset in range(total):
 
@@ -118,7 +131,7 @@ class AIConnector:
 
             if now >= cooldown:
                 result.append(
-                    config.openrouter_api_keys[idx]
+                    (idx, config.openrouter_api_keys[idx])
                 )
 
         return result
@@ -186,7 +199,7 @@ class AIConnector:
             timeout=timeout
         ) as session:
 
-            for idx, api_key in enumerate(keys):
+            for real_idx, api_key in keys:
 
                 try:
 
@@ -198,45 +211,54 @@ class AIConnector:
 
                         body = await response.text()
 
-                        # Rate limit
+                        # --- Rate limit ---
                         if response.status == 429:
-                            self._cooldowns[idx] = (
-                                asyncio.get_event_loop().time()
-                                + 60
+                            self._cooldowns[real_idx] = (
+                                self._now() + 60
                             )
                             last_error = RuntimeError(
                                 f"OpenRouter HTTP 429 "
-                                f"(clave #{idx + 1}, "
+                                f"(clave #{real_idx + 1}, "
                                 f"modelo {modelo_usar}): "
                                 f"{body[:500]}"
                             )
                             continue
 
-                        # Clave inválida
+                        # --- Clave inválida / sin permiso ---
                         if response.status in (401, 403):
-                            self._cooldowns[idx] = (
-                                asyncio.get_event_loop().time()
-                                + 60
+                            self._cooldowns[real_idx] = (
+                                self._now() + 300
                             )
                             last_error = RuntimeError(
                                 f"OpenRouter HTTP "
                                 f"{response.status} "
-                                f"(clave #{idx + 1}): "
+                                f"(clave #{real_idx + 1}): "
                                 f"{body[:500]}"
                             )
                             continue
 
-                        # Éxito
+                        # --- Modelo no disponible / error 404 ---
+                        # No penalizamos la clave: es problema del modelo.
+                        if response.status == 404:
+                            raise RuntimeError(
+                                f"OpenRouter HTTP 404 "
+                                f"(modelo {modelo_usar}): "
+                                f"{body[:500]}"
+                            )
+
+                        # --- Éxito ---
                         if 200 <= response.status < 300:
-                            self._key_index = idx
+                            self._key_index = real_idx
                             return json.loads(body)
 
+                        # --- Otro error: no penalizamos clave ---
                         last_error = RuntimeError(
                             f"OpenRouter HTTP "
                             f"{response.status} "
                             f"(modelo {modelo_usar}): "
                             f"{body[:500]}"
                         )
+                        continue
 
                 except aiohttp.ClientError as exc:
                     last_error = exc
