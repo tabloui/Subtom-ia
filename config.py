@@ -295,8 +295,9 @@ def load_settings() -> Settings:
             "y analiza a fondo",
         ),
 
-        bot_system_text=_required(
-            "BOT_SYSTEM_TEXT"
+        bot_system_text=_env(
+            "BOT_SYSTEM_TEXT",
+            "",
         ),
 
         bot_creator=_env(
