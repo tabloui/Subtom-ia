@@ -88,7 +88,7 @@ class Agent:
         if not self.pool:
             return
 
-        if config.memory_minutes <= 0:
+        if config.memory_limit <= 0:
             return
 
         await self.pool.execute(
