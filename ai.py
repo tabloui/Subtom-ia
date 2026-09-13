@@ -16,7 +16,6 @@ from connector import connector
 from file_tools import FileTools
 
 
-# Extensiones de imagen (para detección de visión).
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp",
     ".bmp", ".tiff", ".tif", ".ico",
@@ -24,13 +23,132 @@ IMAGE_EXTENSIONS = {
 
 
 class Agent:
+
+    # ==================================================================
+    # LISTAS DE MODELOS :free POR ESPECIALIDAD
+    # ==================================================================
+
+    VISION_MODELS = [
+        "inclusionai/ling-3.0-flash-vl:free",
+        "google/gemma-4-31b-it:free",
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "minimax/minimax-m3:free",
+        "thinkingmachines/inkling-small:free",
+        "thinkingmachines/inkling:free",
+        "dots-studio/dots-3-note-preview:free",
+        "qwen/qwen2.5-vl-72b-instruct:free",
+        "qwen/qwen2.5-vl-32b-instruct:free",
+        "qwen/qwen2.5-vl-7b-instruct:free",
+        "qwen/qwen2.5-vl-3b-instruct:free",
+        "qwen/qwen3.7-flash:free",
+        "moonshotai/kimi-vl-a3b-thinking:free",
+        "nvidia/nemotron-nano-12b-v2-vl:free",
+        "nvidia/llama-nemotron-rerank-vl-1b-v2:free",
+        "nvidia/nemotron-3.5-content-safety:free",
+        "meta-llama/llama-3.2-11b-vision-instruct:free",
+        "meta-llama/llama-3.2-90b-vision-instruct:free",
+        "google/gemma-3-27b-it:free",
+        "google/gemma-3-12b-it:free",
+        "google/gemini-2.0-flash-exp:free",
+        "google/gemini-2.0-flash-lite-preview-02-05:free",
+        "mistralai/mistral-small-3.1-24b-instruct:free",
+        "qwen/qwen2-vl-72b-instruct:free",
+        "qwen/qwen2-vl-7b-instruct:free",
+        "qwen/qwen2-vl-2b-instruct:free",
+        "microsoft/phi-3.5-vision-instruct:free",
+        "llava-hf/llava-1.5-7b-hf:free",
+        "OpenGVLab/InternVL2-8B:free",
+        "OpenGVLab/InternVL2-26B:free",
+        "google/paligemma-3b-pt-224:free",
+    ]
+
+    CODE_MODELS = [
+        "qwen/qwen3-coder:free",
+        "qwen/qwen3.6-plus:free",
+        "minimax/minimax-m2.5:free",
+        "minimax/minimax-m2.7:free",
+        "cohere/north-mini-code:free",
+        "z-ai/glm-4.5-air:free",
+        "z-ai/glm-4.5:free",
+        "stepfun/step-3.5-flash:free",
+        "arcee-ai/trinity-large-preview:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "openai/gpt-oss-120b:free",
+        "openai/gpt-oss-20b:free",
+        "qwen/qwen3-next-80b-a3b-instruct:free",
+        "qwen/qwen3-32b:free",
+        "qwen/qwen3-235b-a22b:free",
+        "qwen/qwen3-30b-a3b:free",
+        "qwen/qwen3-14b:free",
+        "qwen/qwen3-8b:free",
+        "deepseek/deepseek-v4-flash:free",
+        "deepseek/deepseek-v4-pro:free",
+        "deepseek/deepseek-chat-v3.1:free",
+        "deepseek/deepseek-r1:free",
+        "mistralai/devstral-small:free",
+        "nex-agi/nex-n2.5-pro:free",
+        "poolside/laguna-xs-2.1:free",
+        "poolside/laguna-s-2.1:free",
+        "liquid/lfm-2.5-1.2b-thinking:free",
+        "nvidia/nemotron-3-nano-30b-a3b:free",
+        "nvidia/nemotron-3.5-lightning:free",
+        "qwen/qwen3.5-9b:free",
+        "microsoft/phi-4:free",
+        "google/gemma-3-27b-it:free",
+        "google/gemma-3-12b-it:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "meta-llama/llama-3.1-8b-instruct:free",
+    ]
+
+    TEXT_MODELS = [
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "google/gemma-4-31b-it:free",
+        "google/gemma-4-26b-a4b-it:free",
+        "minimax/minimax-m2.7:free",
+        "minimax/minimax-m3:free",
+        "deepseek/deepseek-r1:free",
+        "deepseek/deepseek-chat-v3.1:free",
+        "z-ai/glm-4.5-air:free",
+        "z-ai/glm-4.5:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "meta-llama/llama-3.1-8b-instruct:free",
+        "stepfun/step-3.5-flash:free",
+        "arcee-ai/trinity-large-preview:free",
+        "nvidia/nemotron-3-nano-30b-a3b:free",
+        "openai/gpt-oss-120b:free",
+        "openai/gpt-oss-20b:free",
+        "qwen/qwen3-next-80b-a3b-instruct:free",
+        "qwen/qwen3.6-plus:free",
+        "deepseek/deepseek-r1-0528:free",
+        "deepseek/deepseek-v4-flash:free",
+        "google/gemma-3-27b-it:free",
+        "google/gemma-3-12b-it:free",
+        "qwen/qwen3-32b:free",
+        "qwen/qwen3-235b-a22b:free",
+        "qwen/qwen3-30b-a3b:free",
+        "qwen/qwen3-14b:free",
+        "qwen/qwen3-8b:free",
+        "microsoft/phi-4:free",
+        "mistralai/mistral-small-3.1-24b-instruct:free",
+        "liquid/lfm-2.5-2.6b:free",
+        "poolside/laguna-m.1:free",
+        "tngtech/deepseek-r1t2-chimera:free",
+        "tngtech/deepseek-r1t-chimera:free",
+        "cognitivecomputations/dolphin3.0-mistral-24b:free",
+        "gryphe/mythomax-l2-13b:free",
+    ]
+
+    # ==================================================================
+    # INIT
+    # ==================================================================
+
     def __init__(self) -> None:
         self.pool: asyncpg.Pool | None = None
 
-        # Workspace interno de la IA.
         self.files = FileTools(config.workspace)
 
-        # Dos claves FLUX con rotación automática.
         self._flux_keys = deque(
             key
             for key in (
@@ -40,20 +158,11 @@ class Agent:
             if key
         )
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # BASE DE DATOS / MEMORIA
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     async def init(self) -> None:
-        """
-        Inicializa la conexión con Neon y crea una tabla propia.
-
-        IMPORTANTE:
-        No utilizamos la tabla antigua 'subtom_messages' porque puede
-        existir con un esquema incompatible. Usamos una tabla nueva
-        e independiente para evitar el UndefinedColumnError.
-        """
-
         self.pool = await asyncpg.create_pool(
             config.database_url,
             min_size=1,
@@ -162,19 +271,14 @@ class Agent:
             for row in rows
         ]
 
-    # ------------------------------------------------------------------
-    # VISIÓN: DETECCIÓN E INYECCIÓN DE IMÁGENES
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # VISIÓN
+    # ==================================================================
 
     def _extract_image_paths(
         self,
         prompt: str,
     ) -> list[str]:
-        """
-        Detecta rutas de imágenes dentro del prompt.
-        bot.py inserta líneas tipo:
-            -> ruta local: /app/workspace/uploads/123_foto.png
-        """
 
         paths: list[str] = []
 
@@ -182,7 +286,6 @@ class Agent:
             r"->\s*ruta local:\s*(\S+)",
             prompt,
         ):
-
             raw = match.group(1).strip().strip('",')
 
             try:
@@ -198,7 +301,6 @@ class Agent:
             except Exception:
                 continue
 
-        # Evitar duplicados conservando el orden.
         seen: set[str] = set()
         unique: list[str] = []
 
@@ -214,10 +316,6 @@ class Agent:
         prompt: str,
         image_paths: list[str],
     ) -> list[dict[str, Any]]:
-        """
-        Construye el contenido multimodal (texto + imágenes)
-        para mandarlo al modelo con visión.
-        """
 
         content: list[dict[str, Any]] = [
             {
@@ -232,7 +330,6 @@ class Agent:
 
                 info = self.files.read_image_base64(path)
 
-                # Limitar tamaño para no reventar la API.
                 if info["size"] > 20 * 1024 * 1024:
                     content.append(
                         {
@@ -268,16 +365,47 @@ class Agent:
 
         return content
 
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # SELECCIÓN DE MODELO SEGÚN LA TAREA
+    # ==================================================================
+
+    def _select_model(
+        self,
+        prompt: str,
+        force_image: bool = False,
+    ) -> list[str]:
+        """
+        Devuelve la lista ordenada de modelos a intentar.
+        El primero es el preferido; los demás son fallback.
+        """
+
+        if force_image:
+            return self.VISION_MODELS
+
+        if self._extract_image_paths(prompt):
+            return self.VISION_MODELS
+
+        code_keywords = [
+            "código", "code", "programa", "script",
+            "función", "function", "deploy", "github",
+            "error", "bug", "debug", "python",
+            "javascript", "html", "css", "api",
+            "servidor", "server", "base de datos",
+            "database", "commit", "push", "repositorio",
+            "repo", "vercel", "railway",
+        ]
+
+        if any(kw in prompt.lower() for kw in code_keywords):
+            return self.CODE_MODELS
+
+        return self.TEXT_MODELS
+
+    # ==================================================================
     # DEFINICIÓN DE HERRAMIENTAS
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
-
-            # ==========================================================
-            # ARCHIVOS (básicos)
-            # ==========================================================
 
             {
                 "type": "function",
@@ -312,10 +440,7 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Ruta del archivo.",
-                            }
+                            "path": {"type": "string"}
                         },
                         "required": ["path"],
                     },
@@ -370,13 +495,11 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "query": {
+                            "query": {"type": "string"},
+                            "path": {
                                 "type": "string",
-                                "description": (
-                                    "Patrón de búsqueda de pathlib."
-                                ),
+                                "default": ".",
                             },
-                            "path": {"type": "string", "default": "."},
                         },
                         "required": ["query"],
                     },
@@ -528,10 +651,6 @@ class Agent:
                 },
             },
 
-            # ==========================================================
-            # ARCHIVOS (nuevos: análisis / lectura avanzada)
-            # ==========================================================
-
             {
                 "type": "function",
                 "function": {
@@ -557,8 +676,7 @@ class Agent:
                     "description": (
                         "Lee cualquier archivo y devuelve algo útil: "
                         "imagen (info), pdf (texto), texto (contenido), "
-                        "binario (info). Ideal para analizar "
-                        "adjuntos de Discord."
+                        "binario (info)."
                     ),
                     "parameters": {
                         "type": "object",
@@ -574,9 +692,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_read_pdf",
-                    "description": (
-                        "Extrae el texto de un archivo PDF."
-                    ),
+                    "description": "Extrae el texto de un archivo PDF.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -814,9 +930,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_image_resize",
-                    "description": (
-                        "Redimensiona una imagen."
-                    ),
+                    "description": "Redimensiona una imagen.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -928,10 +1042,6 @@ class Agent:
                 },
             },
 
-            # ==========================================================
-            # GITHUB
-            # ==========================================================
-
             {
                 "type": "function",
                 "function": {
@@ -993,10 +1103,6 @@ class Agent:
                 },
             },
 
-            # ==========================================================
-            # VERCEL
-            # ==========================================================
-
             {
                 "type": "function",
                 "function": {
@@ -1026,10 +1132,6 @@ class Agent:
                 },
             },
 
-            # ==========================================================
-            # FLUX
-            # ==========================================================
-
             {
                 "type": "function",
                 "function": {
@@ -1049,9 +1151,9 @@ class Agent:
             },
         ]
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # EJECUCIÓN DE HERRAMIENTAS
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     async def run_tool(
         self,
@@ -1060,10 +1162,6 @@ class Agent:
     ) -> dict[str, Any]:
 
         try:
-
-            # ==========================================================
-            # ARCHIVOS (básicos)
-            # ==========================================================
 
             if name == "file_list":
                 return {
@@ -1074,24 +1172,20 @@ class Agent:
 
             if name == "file_read":
                 return {
-                    "content": self.files.read_file(
-                        args["path"]
-                    )
+                    "content": self.files.read_file(args["path"])
                 }
 
             if name == "file_write":
                 return {
                     "path": self.files.write_file(
-                        args["path"],
-                        args["content"],
+                        args["path"], args["content"]
                     )
                 }
 
             if name == "file_append":
                 return {
                     "path": self.files.append_file(
-                        args["path"],
-                        args["content"],
+                        args["path"], args["content"]
                     )
                 }
 
@@ -1104,30 +1198,22 @@ class Agent:
                 }
 
             if name == "file_info":
-                return self.files.info(
-                    args["path"]
-                )
+                return self.files.info(args["path"])
 
             if name == "file_mkdir":
-                return {
-                    "path": self.files.mkdir(
-                        args["path"]
-                    )
-                }
+                return {"path": self.files.mkdir(args["path"])}
 
             if name == "file_copy":
                 return {
                     "path": self.files.copy(
-                        args["source"],
-                        args["destination"],
+                        args["source"], args["destination"]
                     )
                 }
 
             if name == "file_move":
                 return {
                     "path": self.files.move(
-                        args["source"],
-                        args["destination"],
+                        args["source"], args["destination"]
                     )
                 }
 
@@ -1142,16 +1228,13 @@ class Agent:
             if name == "create_zip":
                 return {
                     "path": self.files.zip_create(
-                        args["output_zip"],
-                        args["sources"],
+                        args["output_zip"], args["sources"]
                     )
                 }
 
             if name == "list_zip":
                 return {
-                    "files": self.files.zip_list(
-                        args["zip_name"]
-                    )
+                    "files": self.files.zip_list(args["zip_name"])
                 }
 
             if name == "unzip_file":
@@ -1162,45 +1245,24 @@ class Agent:
                     )
                 }
 
-            # ==========================================================
-            # ARCHIVOS (nuevos: análisis / lectura avanzada)
-            # ==========================================================
-
             if name == "file_detect_kind":
-                return {
-                    "kind": self.files.detect_kind(
-                        args["path"]
-                    )
-                }
+                return {"kind": self.files.detect_kind(args["path"])}
 
             if name == "file_read_any":
                 data = self.files.read_any(args["path"])
-
-                # Evitar devolver el base64 completo como texto.
                 if isinstance(data, dict):
                     data.pop("base64", None)
                     data.pop("data_url", None)
-
                 return data
 
             if name == "file_read_pdf":
-                return {
-                    "text": self.files.read_pdf_text(
-                        args["path"]
-                    )
-                }
+                return {"text": self.files.read_pdf_text(args["path"])}
 
             if name == "file_read_text":
-                return {
-                    "text": self.files.read_text_auto(
-                        args["path"]
-                    )
-                }
+                return {"text": self.files.read_text_auto(args["path"])}
 
             if name == "file_image_info":
-                return self.files.image_info(
-                    args["path"]
-                )
+                return self.files.image_info(args["path"])
 
             if name == "file_tree":
                 return self.files.tree(
@@ -1234,11 +1296,7 @@ class Agent:
                 }
 
             if name == "file_count_lines":
-                return {
-                    "lines": self.files.count_lines(
-                        args["path"]
-                    )
-                }
+                return {"lines": self.files.count_lines(args["path"])}
 
             if name == "file_replace":
                 return self.files.replace_in_file(
@@ -1255,18 +1313,10 @@ class Agent:
                 )
 
             if name == "file_exists":
-                return {
-                    "exists": self.files.exists(
-                        args["path"]
-                    )
-                }
+                return {"exists": self.files.exists(args["path"])}
 
             if name == "file_backup":
-                return {
-                    "backup": self.files.backup(
-                        args["path"]
-                    )
-                }
+                return {"backup": self.files.backup(args["path"])}
 
             if name == "file_image_resize":
                 return {
@@ -1302,11 +1352,7 @@ class Agent:
                 }
 
             if name == "file_read_json":
-                return {
-                    "data": self.files.read_json(
-                        args["path"]
-                    )
-                }
+                return {"data": self.files.read_json(args["path"])}
 
             if name == "file_write_json":
                 return {
@@ -1319,7 +1365,6 @@ class Agent:
 
             if name == "file_read_csv":
                 max_rows = args.get("max_rows")
-
                 return {
                     "rows": self.files.read_csv(
                         args["path"],
@@ -1327,61 +1372,39 @@ class Agent:
                     )
                 }
 
-            # ==========================================================
-            # GITHUB
-            # ==========================================================
-
             if name == "github_list":
                 return await self.github_request(
-                    "GET",
-                    "/user/repos?per_page=100",
+                    "GET", "/user/repos?per_page=100"
                 )
 
             if name == "github_read":
                 repo = args["repo"].strip("/")
                 path = args["path"].lstrip("/")
-
                 return await self.github_request(
-                    "GET",
-                    f"/repos/{repo}/contents/{path}",
+                    "GET", f"/repos/{repo}/contents/{path}"
                 )
 
             if name == "github_write":
                 return await self.github_write(args)
 
-            # ==========================================================
-            # VERCEL
-            # ==========================================================
-
             if name == "vercel_projects":
                 return await self.vercel_request(
-                    "GET",
-                    "/v9/projects?limit=100",
+                    "GET", "/v9/projects?limit=100"
                 )
 
             if name == "vercel_deployments":
                 project = aiohttp.helpers.quote(
-                    args["project"],
-                    safe="",
+                    args["project"], safe=""
                 )
-
                 return await self.vercel_request(
                     "GET",
                     f"/v6/deployments?projectId={project}&limit=20",
                 )
 
-            # ==========================================================
-            # FLUX
-            # ==========================================================
-
             if name == "generate_image":
-                return await self.generate_image(
-                    args["prompt"]
-                )
+                return await self.generate_image(args["prompt"])
 
-            return {
-                "error": f"Herramienta desconocida: {name}"
-            }
+            return {"error": f"Herramienta desconocida: {name}"}
 
         except Exception as exc:
             return {
@@ -1391,9 +1414,9 @@ class Agent:
                 )
             }
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # GITHUB
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     async def github_request(
         self,
@@ -1403,26 +1426,17 @@ class Agent:
     ) -> dict[str, Any]:
 
         if not config.github_token:
-            return {
-                "error": (
-                    "GITHUB_TOKEN no está configurado."
-                )
-            }
+            return {"error": "GITHUB_TOKEN no está configurado."}
 
         headers = {
-            "Authorization": (
-                f"Bearer {config.github_token}"
-            ),
+            "Authorization": f"Bearer {config.github_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
         timeout = aiohttp.ClientTimeout(total=60)
 
-        async with aiohttp.ClientSession(
-            timeout=timeout
-        ) as session:
-
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.request(
                 method,
                 "https://api.github.com" + path,
@@ -1434,19 +1448,14 @@ class Agent:
 
                 if response.status >= 400:
                     return {
-                        "error": (
-                            f"GitHub HTTP "
-                            f"{response.status}"
-                        ),
+                        "error": f"GitHub HTTP {response.status}",
                         "detail": text[:3000],
                     }
 
                 try:
                     return json.loads(text)
                 except json.JSONDecodeError:
-                    return {
-                        "content": text
-                    }
+                    return {"content": text}
 
     async def github_write(
         self,
@@ -1454,11 +1463,7 @@ class Agent:
     ) -> dict[str, Any]:
 
         if not config.github_token:
-            return {
-                "error": (
-                    "GITHUB_TOKEN no está configurado."
-                )
-            }
+            return {"error": "GITHUB_TOKEN no está configurado."}
 
         repo = args["repo"].strip("/")
         path = args["path"].lstrip("/")
@@ -1473,43 +1478,25 @@ class Agent:
         )
 
         headers = {
-            "Authorization": (
-                f"Bearer {config.github_token}"
-            ),
+            "Authorization": f"Bearer {config.github_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
         timeout = aiohttp.ClientTimeout(total=60)
 
-        async with aiohttp.ClientSession(
-            timeout=timeout
-        ) as session:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
 
             sha = None
 
-            async with session.get(
-                url,
-                headers=headers,
-            ) as response:
-
+            async with session.get(url, headers=headers) as response:
                 if response.status == 200:
-                    existing = await response.json(
-                        content_type=None
-                    )
+                    existing = await response.json(content_type=None)
                     sha = existing.get("sha")
-
-                elif response.status not in {
-                    404,
-                    301,
-                    302,
-                }:
+                elif response.status not in {404, 301, 302}:
                     detail = await response.text()
                     return {
-                        "error": (
-                            f"GitHub HTTP "
-                            f"{response.status}"
-                        ),
+                        "error": f"GitHub HTTP {response.status}",
                         "detail": detail[:3000],
                     }
 
@@ -1522,29 +1509,22 @@ class Agent:
                 payload["sha"] = sha
 
             async with session.put(
-                url,
-                headers=headers,
-                json=payload,
+                url, headers=headers, json=payload
             ) as response:
 
-                data = await response.json(
-                    content_type=None
-                )
+                data = await response.json(content_type=None)
 
                 if response.status >= 400:
                     return {
-                        "error": (
-                            f"GitHub HTTP "
-                            f"{response.status}"
-                        ),
+                        "error": f"GitHub HTTP {response.status}",
                         "detail": data,
                     }
 
                 return data
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # VERCEL
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     async def vercel_request(
         self,
@@ -1553,48 +1533,34 @@ class Agent:
     ) -> dict[str, Any]:
 
         if not config.vercel_token:
-            return {
-                "error": (
-                    "VERCEL_TOKEN no está configurado."
-                )
-            }
+            return {"error": "VERCEL_TOKEN no está configurado."}
 
         headers = {
-            "Authorization": (
-                f"Bearer {config.vercel_token}"
-            )
+            "Authorization": f"Bearer {config.vercel_token}"
         }
 
         timeout = aiohttp.ClientTimeout(total=60)
 
-        async with aiohttp.ClientSession(
-            timeout=timeout
-        ) as session:
-
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.request(
                 method,
                 "https://api.vercel.com" + path,
                 headers=headers,
             ) as response:
 
-                data = await response.json(
-                    content_type=None
-                )
+                data = await response.json(content_type=None)
 
                 if response.status >= 400:
                     return {
-                        "error": (
-                            f"Vercel HTTP "
-                            f"{response.status}"
-                        ),
+                        "error": f"Vercel HTTP {response.status}",
                         "detail": data,
                     }
 
                 return data
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # FLUX
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     async def generate_image(
         self,
@@ -1602,14 +1568,9 @@ class Agent:
     ) -> dict[str, Any]:
 
         if not self._flux_keys:
-            return {
-                "error": (
-                    "No hay ninguna clave FLUX configurada."
-                )
-            }
+            return {"error": "No hay ninguna clave FLUX configurada."}
 
         key = self._flux_keys[0]
-
         self._flux_keys.rotate(-1)
 
         base = config.flux_base_url.rstrip("/")
@@ -1622,9 +1583,7 @@ class Agent:
 
         timeout = aiohttp.ClientTimeout(total=120)
 
-        async with aiohttp.ClientSession(
-            timeout=timeout
-        ) as session:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
 
             async with session.post(
                 f"{base}/{config.flux_endpoint}",
@@ -1632,23 +1591,15 @@ class Agent:
                 json={"prompt": prompt},
             ) as response:
 
-                data = await response.json(
-                    content_type=None
-                )
+                data = await response.json(content_type=None)
 
                 if response.status >= 400:
                     return {
-                        "error": (
-                            f"FLUX HTTP "
-                            f"{response.status}"
-                        ),
+                        "error": f"FLUX HTTP {response.status}",
                         "detail": data,
                     }
 
-                task_id = (
-                    data.get("id")
-                    or data.get("task_id")
-                )
+                task_id = data.get("id") or data.get("task_id")
 
             if not task_id:
                 return {"result": data}
@@ -1662,9 +1613,7 @@ class Agent:
                     headers=headers,
                 ) as response:
 
-                    result = await response.json(
-                        content_type=None
-                    )
+                    result = await response.json(content_type=None)
 
                     if response.status >= 400:
                         return {
@@ -1675,18 +1624,10 @@ class Agent:
                             "detail": result,
                         }
 
-                    status = str(
-                        result.get("status", "")
-                    ).lower()
+                    status = str(result.get("status", "")).lower()
 
-                    if status in {
-                        "ready",
-                        "succeeded",
-                        "completed",
-                    }:
-
+                    if status in {"ready", "succeeded", "completed"}:
                         nested = result.get("result")
-
                         sample = None
 
                         if isinstance(nested, dict):
@@ -1702,23 +1643,15 @@ class Agent:
 
                     if status in {"failed", "error"}:
                         return {
-                            "error": (
-                                "La generación de "
-                                "imagen falló."
-                            ),
+                            "error": "La generación de imagen falló.",
                             "detail": result,
                         }
 
-            return {
-                "error": (
-                    "La generación de imagen "
-                    "tardó demasiado."
-                )
-            }
+            return {"error": "La generación de imagen tardó demasiado."}
 
-    # ------------------------------------------------------------------
-    # CHAT / TOOL LOOP
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # CHAT / TOOL LOOP CON FALLBACK DE MODELOS
+    # ==================================================================
 
     async def ask(
         self,
@@ -1730,33 +1663,17 @@ class Agent:
 
         await self.cleanup_memory()
 
-        await self.save(
-            user_id,
-            channel_id,
-            "user",
-            prompt,
-        )
+        await self.save(user_id, channel_id, "user", prompt)
 
-        messages = await self.history(
-            user_id,
-            channel_id,
-        )
+        messages = await self.history(user_id, channel_id)
 
-        # ----------------------------------------------------------
-        # VISIÓN: si el prompt trae rutas de imágenes,
-        # las inyectamos como contenido multimodal.
-        # ----------------------------------------------------------
-
+        # --- Imágenes ---
         image_paths = self._extract_image_paths(prompt)
 
         if image_paths and messages:
-
             multimodal = self._build_multimodal_content(
-                prompt,
-                image_paths,
+                prompt, image_paths
             )
-
-            # El último mensaje es el que acabamos de guardar.
             if messages[-1].get("role") == "user":
                 messages[-1] = {
                     "role": "user",
@@ -1770,149 +1687,130 @@ class Agent:
                     "content": (
                         "Genera una imagen usando la "
                         "herramienta generate_image "
-                        "para esta petición:\n\n"
-                        + prompt
+                        "para esta petición:\n\n" + prompt
                     ),
                 }
             )
 
         image_url: str | None = None
 
-        for _ in range(
-            config.ai_max_tool_rounds
-        ):
+        # --- Modelos a intentar (fallback) ---
+        modelos = self._select_model(prompt, force_image)
 
-            response = await connector.complete(
-                messages,
-                self.tool_schemas(),
-            )
+        last_error: Exception | None = None
 
-            choices = (
-                response.get("choices")
-                or []
-            )
+        for modelo_actual in modelos:
 
-            if not choices:
-                raise RuntimeError(
-                    "La IA no devolvió ninguna elección."
-                )
+            try:
 
-            message = (
-                choices[0].get("message")
-                or {}
-            )
+                for _ in range(config.ai_max_tool_rounds):
 
-            tool_calls = (
-                message.get("tool_calls")
-                or []
-            )
-
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": (
-                    message.get("content")
-                    or ""
-                ),
-            }
-
-            if tool_calls:
-                assistant_message[
-                    "tool_calls"
-                ] = tool_calls
-
-            messages.append(
-                assistant_message
-            )
-
-            # ----------------------------------------------------------
-            # RESPUESTA FINAL
-            # ----------------------------------------------------------
-
-            if not tool_calls:
-
-                answer = (
-                    message.get("content")
-                    or ""
-                ).strip()
-
-                if not answer:
-                    answer = (
-                        "No he recibido una respuesta "
-                        "de texto del modelo."
+                    response = await connector.complete(
+                        messages,
+                        self.tool_schemas(),
+                        model=modelo_actual,
                     )
 
-                await self.save(
-                    user_id,
-                    channel_id,
-                    "assistant",
-                    answer,
-                )
+                    choices = response.get("choices") or []
 
-                return answer, image_url
+                    if not choices:
+                        raise RuntimeError(
+                            "La IA no devolvió ninguna elección."
+                        )
 
-            # ----------------------------------------------------------
-            # EJECUTAR TOOLS
-            # ----------------------------------------------------------
+                    message = choices[0].get("message") or {}
+                    tool_calls = message.get("tool_calls") or []
 
-            for call in tool_calls:
-
-                function = (
-                    call.get("function")
-                    or {}
-                )
-
-                name = (
-                    function.get("name")
-                    or ""
-                )
-
-                raw_args = function.get(
-                    "arguments",
-                    "{}",
-                )
-
-                if isinstance(raw_args, str):
-                    try:
-                        args = json.loads(raw_args)
-                    except json.JSONDecodeError:
-                        args = {}
-                elif isinstance(raw_args, dict):
-                    args = raw_args
-                else:
-                    args = {}
-
-                if not isinstance(args, dict):
-                    args = {}
-
-                result = await self.run_tool(
-                    name,
-                    args,
-                )
-
-                if (
-                    isinstance(result, dict)
-                    and result.get("image_url")
-                ):
-                    image_url = result["image_url"]
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": (
-                            call.get("id")
-                            or ""
-                        ),
-                        "content": (
-                            connector.clean_tool_result(
-                                result
-                            )
-                        ),
+                    assistant_message: dict[str, Any] = {
+                        "role": "assistant",
+                        "content": message.get("content") or "",
                     }
+
+                    if tool_calls:
+                        assistant_message["tool_calls"] = tool_calls
+
+                    messages.append(assistant_message)
+
+                    # --- Respuesta final ---
+                    if not tool_calls:
+
+                        answer = (
+                            message.get("content") or ""
+                        ).strip()
+
+                        if not answer:
+                            answer = (
+                                "No he recibido una respuesta "
+                                "de texto del modelo."
+                            )
+
+                        await self.save(
+                            user_id,
+                            channel_id,
+                            "assistant",
+                            answer,
+                        )
+
+                        return answer, image_url
+
+                    # --- Tools ---
+                    for call in tool_calls:
+
+                        function = call.get("function") or {}
+                        name = function.get("name") or ""
+                        raw_args = function.get("arguments", "{}")
+
+                        if isinstance(raw_args, str):
+                            try:
+                                args = json.loads(raw_args)
+                            except json.JSONDecodeError:
+                                args = {}
+                        elif isinstance(raw_args, dict):
+                            args = raw_args
+                        else:
+                            args = {}
+
+                        if not isinstance(args, dict):
+                            args = {}
+
+                        result = await self.run_tool(name, args)
+
+                        if (
+                            isinstance(result, dict)
+                            and result.get("image_url")
+                        ):
+                            image_url = result["image_url"]
+
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call.get("id") or "",
+                                "content": (
+                                    connector.clean_tool_result(result)
+                                ),
+                            }
+                        )
+
+                raise RuntimeError(
+                    "La IA agotó el número máximo "
+                    "de rondas de herramientas."
                 )
+
+            except Exception as exc:
+
+                last_error = exc
+
+                print(
+                    f"[FALLBACK] Modelo '{modelo_actual}' "
+                    f"falló: {type(exc).__name__}: "
+                    f"{str(exc)[:200]}. Probando siguiente..."
+                )
+
+                continue
 
         raise RuntimeError(
-            "La IA agotó el número máximo "
-            "de rondas de herramientas."
+            "Todos los modelos gratuitos fallaron. "
+            f"Último error: {last_error}"
         )
 
 
