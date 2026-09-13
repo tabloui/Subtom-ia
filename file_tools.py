@@ -7,11 +7,8 @@ Incluye:
 - Crear archivos con cualquier nombre y extensión.
 - Leer y escribir archivos de texto.
 - Copiar, mover, renombrar y borrar archivos/directorios.
-- Crear ZIP.
-- Extraer ZIP.
-- Listar contenido de directorios y ZIP.
-- Crear directorios.
-- Obtener información de archivos.
+- Crear ZIP. Extraer ZIP. Listar contenido de directorios y ZIP.
+- Crear directorios. Obtener información de archivos.
 
 NUEVO (análisis):
 - Leer imágenes y devolverlas en base64 (para modelos con visión).
@@ -44,9 +41,9 @@ NUEVO (robustez / utilidades extra):
 - empty_dir / clear_dir
 
 NUEVO (búsqueda web):
-- web_search: motor DuckDuckGo HTML (async, sin API key).
-- TOOL_SCHEMAS: esquemas compatibles con OpenRouter / OpenAI tools.
-- dispatch_tool: ejecuta la tool que pida el LLM.
+- web_search: buscador DuckDuckGo HTML (async, sin API key).
+  Incluye rotación de User-Agent + detección de rate limit 202.
+- web_fetch: descarga una URL y extrae el texto legible (modo lector).
 
 IMPORTANTE:
 Este módulo permite operaciones reales sobre el sistema de archivos.
@@ -71,7 +68,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -139,9 +136,23 @@ class FileToolsError(Exception):
 class FileTools:
     """API sencilla para que una IA pueda trabajar con archivos."""
 
+    # Rotación de User-Agent para web_search / web_fetch
+    _USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    ]
+
     def __init__(self, workspace: str | Path = "."):
         self.workspace = Path(workspace).expanduser().resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        self._ua_index = 0
+
+    def _next_ua(self) -> str:
+        ua = self._USER_AGENTS[self._ua_index % len(self._USER_AGENTS)]
+        self._ua_index += 1
+        return ua
 
     # ======================================================================
     # HELPERS INTERNOS
@@ -1077,9 +1088,13 @@ class FileTools:
         self,
         query: str,
         max_results: int = 5,
-        timeout: float = 12.0,
+        timeout: float = 15.0,
     ) -> dict[str, Any]:
-        """Busca en DuckDuckGo HTML y devuelve resultados parseados."""
+        """
+        Busca en DuckDuckGo HTML y devuelve resultados parseados.
+        Rotación de User-Agent + detección de rate limit (HTTP 202).
+        Google no se usa: bloquea scrapers con CAPTCHA y URLs goto.
+        """
 
         if not query or not query.strip():
             return {"error": "query vacío", "results": []}
@@ -1087,28 +1102,44 @@ class FileTools:
         max_results = max(1, min(int(max_results), 10))
 
         headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": self._next_ua(),
             "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
             "Referer": "https://duckduckgo.com/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
 
         client_timeout = aiohttp.ClientTimeout(total=timeout)
 
-        async with aiohttp.ClientSession(
-            headers=headers,
-            timeout=client_timeout,
-        ) as session:
-            async with session.post(
-                "https://html.duckduckgo.com/html/",
-                data={"q": query, "kl": "wt-wt"},
-                allow_redirects=True,
-            ) as resp:
-                resp.raise_for_status()
-                html = await resp.text()
+        try:
+            async with aiohttp.ClientSession(
+                headers=headers,
+                timeout=client_timeout,
+            ) as session:
+                async with session.post(
+                    "https://html.duckduckgo.com/html/",
+                    data={"q": query, "kl": "wt-wt"},
+                    allow_redirects=True,
+                ) as resp:
+
+                    if resp.status == 202:
+                        return {
+                            "error": "DuckDuckGo rate limit (202). Reintenta en unos segundos.",
+                            "results": [],
+                            "rate_limited": True,
+                        }
+
+                    if resp.status >= 400:
+                        return {
+                            "error": f"DDG HTTP {resp.status}",
+                            "results": [],
+                        }
+
+                    html = await resp.text()
+        except Exception as exc:
+            return {
+                "error": f"{type(exc).__name__}: {exc}",
+                "results": [],
+            }
 
         soup = BeautifulSoup(html, "lxml")
 
@@ -1152,6 +1183,122 @@ class FileTools:
             "query": query,
             "count": len(results),
             "results": results,
+        }
+
+    # ======================================================================
+    # LECTOR DE PÁGINAS WEB (extrae texto tipo "modo lector")
+    # ======================================================================
+
+    async def web_fetch(
+        self,
+        url: str,
+        max_chars: int = 8000,
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        """Descarga una URL y devuelve el texto legible de la página."""
+
+        if not url or not url.strip():
+            return {"error": "url vacío"}
+
+        url = url.strip()
+
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        headers = {
+            "User-Agent": self._next_ua(),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        }
+
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+
+        try:
+            async with aiohttp.ClientSession(
+                headers=headers,
+                timeout=client_timeout,
+            ) as session:
+                async with session.get(
+                    url, allow_redirects=True
+                ) as resp:
+
+                    if resp.status >= 400:
+                        return {
+                            "error": f"HTTP {resp.status}",
+                            "url": url,
+                        }
+
+                    content_type = (
+                        resp.headers.get("Content-Type", "")
+                    ).lower()
+
+                    if (
+                        "html" not in content_type
+                        and "text" not in content_type
+                        and "xml" not in content_type
+                    ):
+                        return {
+                            "error": (
+                                f"tipo no soportado: {content_type}"
+                            ),
+                            "url": url,
+                        }
+
+                    html = await resp.text()
+                    final_url = str(resp.url)
+
+        except Exception as exc:
+            return {
+                "error": f"{type(exc).__name__}: {exc}",
+                "url": url,
+            }
+
+        soup = BeautifulSoup(html, "lxml")
+
+        # Eliminar ruido
+        for tag in soup(
+            [
+                "script", "style", "noscript", "iframe",
+                "nav", "header", "footer", "aside", "form",
+                "button", "svg", "img", "video", "audio",
+                "canvas", "figure", "menu",
+            ]
+        ):
+            tag.decompose()
+
+        # Título
+        title = ""
+        if soup.title and soup.title.string:
+            title = soup.title.string.strip()
+
+        # Buscar contenedor de contenido principal
+        main = (
+            soup.find("article")
+            or soup.find("main")
+            or soup.find(attrs={"role": "main"})
+            or soup.find(attrs={"id": "content"})
+            or soup.find(attrs={"class": "content"})
+            or soup.body
+            or soup
+        )
+
+        text = main.get_text("\n", strip=True)
+
+        # Colapsar líneas en blanco repetidas
+        import re as _re
+        text = _re.sub(r"[ \t]+", " ", text)
+        text = _re.sub(r"\n{3,}", "\n\n", text)
+
+        truncated = len(text) > max_chars
+        if truncated:
+            text = text[:max_chars] + "\n\n[...contenido truncado...]"
+
+        return {
+            "url": final_url,
+            "title": title,
+            "chars": len(text),
+            "truncated": truncated,
+            "text": text,
         }
 
 
@@ -1378,6 +1525,10 @@ async def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
     return await TOOLS.web_search(query, max_results)
 
 
+async def web_fetch(url: str, max_chars: int = 8000) -> dict[str, Any]:
+    return await TOOLS.web_fetch(url, max_chars)
+
+
 # ---------------------------------------------------------------------------
 # TOOL SCHEMAS (lo que ve el LLM en OpenRouter)
 # ---------------------------------------------------------------------------
@@ -1390,8 +1541,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "web_search",
             "description": (
                 "Busca información actual en internet con DuckDuckGo. "
-                "Úsala para noticias, datos recientes, documentación "
-                "o verificar algo que no sabes."
+                "Devuelve título, URL y snippet. Usa web_fetch después "
+                "para leer una URL concreta."
             ),
             "parameters": {
                 "type": "object",
@@ -1408,6 +1559,33 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": (
+                "Descarga una página web y devuelve el texto legible "
+                "de su contenido. Úsala DESPUÉS de web_search para leer "
+                "una URL concreta."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL completa (http/https).",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "default": 8000,
+                        "minimum": 500,
+                        "maximum": 30000,
+                    },
+                },
+                "required": ["url"],
             },
         },
     },
@@ -1610,6 +1788,7 @@ def _build_registry() -> dict[str, Any]:
     return {
         # web
         "web_search": web_search,
+        "web_fetch": web_fetch,
 
         # lectura
         "read_file": read_file,
@@ -1739,10 +1918,13 @@ def main() -> None:
     p = sub.add_parser("duplicates")
     p.add_argument("directory", nargs="?", default=".")
 
-    # NUEVO: búsqueda web desde CLI
     p = sub.add_parser("search")
     p.add_argument("query")
     p.add_argument("--max", type=int, default=5)
+
+    p = sub.add_parser("fetch")
+    p.add_argument("url")
+    p.add_argument("--chars", type=int, default=8000)
 
     args = parser.parse_args()
 
@@ -1797,6 +1979,9 @@ def main() -> None:
             result = json.dumps(find_duplicates(args.directory), indent=2, ensure_ascii=False)
         elif args.command == "search":
             data = asyncio.run(web_search(args.query, args.max))
+            result = json.dumps(data, indent=2, ensure_ascii=False)
+        elif args.command == "fetch":
+            data = asyncio.run(web_fetch(args.url, args.chars))
             result = json.dumps(data, indent=2, ensure_ascii=False)
         else:
             raise ValueError("Comando desconocido")
