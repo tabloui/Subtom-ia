@@ -96,7 +96,7 @@ class Agent:
             DELETE FROM subtom_memory
             WHERE created_at < NOW() - ($1 * INTERVAL '1 minute')
             """,
-            config.memory_minutes,
+            config.memory_limit,
         )
 
     async def save(
