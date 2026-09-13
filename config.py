@@ -208,10 +208,14 @@ def load_settings() -> Settings:
 
     # ========================================================
     # AI MODEL
+    #
+    # Modelo por defecto. ai.py puede sobreescribirlo
+    # dinámicamente según la tarea (visión / código / texto).
     # ========================================================
 
-    ai_model = _required(
-        "AI_MODEL"
+    ai_model = _env(
+        "AI_MODEL",
+        "google/gemma-4-31b-it:free",
     )
 
     # ========================================================
