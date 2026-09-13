@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -12,6 +14,13 @@ import asyncpg
 from config import config
 from connector import connector
 from file_tools import FileTools
+
+
+# Extensiones de imagen (para detección de visión).
+IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".bmp", ".tiff", ".tif", ".ico",
+}
 
 
 class Agent:
@@ -54,7 +63,6 @@ class Agent:
 
         async with self.pool.acquire() as conn:
 
-            # Tabla nueva y propia de esta versión.
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS subtom_memory (
@@ -81,10 +89,6 @@ class Agent:
             self.pool = None
 
     async def cleanup_memory(self) -> None:
-        """
-        Borra memoria antigua según el tiempo interno configurado.
-        """
-
         if not self.pool:
             return
 
@@ -129,7 +133,7 @@ class Agent:
         self,
         user_id: int,
         channel_id: int,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
 
         if not self.pool:
             return []
@@ -159,15 +163,121 @@ class Agent:
         ]
 
     # ------------------------------------------------------------------
+    # VISIÓN: DETECCIÓN E INYECCIÓN DE IMÁGENES
+    # ------------------------------------------------------------------
+
+    def _extract_image_paths(
+        self,
+        prompt: str,
+    ) -> list[str]:
+        """
+        Detecta rutas de imágenes dentro del prompt.
+        bot.py inserta líneas tipo:
+            -> ruta local: /app/workspace/uploads/123_foto.png
+        """
+
+        paths: list[str] = []
+
+        for match in re.finditer(
+            r"->\s*ruta local:\s*(\S+)",
+            prompt,
+        ):
+
+            raw = match.group(1).strip().strip('",')
+
+            try:
+                p = Path(raw)
+
+                if (
+                    p.suffix.lower() in IMAGE_EXTENSIONS
+                    and p.exists()
+                    and p.is_file()
+                ):
+                    paths.append(str(p))
+
+            except Exception:
+                continue
+
+        # Evitar duplicados conservando el orden.
+        seen: set[str] = set()
+        unique: list[str] = []
+
+        for p in paths:
+            if p not in seen:
+                seen.add(p)
+                unique.append(p)
+
+        return unique
+
+    def _build_multimodal_content(
+        self,
+        prompt: str,
+        image_paths: list[str],
+    ) -> list[dict[str, Any]]:
+        """
+        Construye el contenido multimodal (texto + imágenes)
+        para mandarlo al modelo con visión.
+        """
+
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": prompt,
+            }
+        ]
+
+        for path in image_paths:
+
+            try:
+
+                info = self.files.read_image_base64(path)
+
+                # Limitar tamaño para no reventar la API.
+                if info["size"] > 20 * 1024 * 1024:
+                    content.append(
+                        {
+                            "type": "text",
+                            "text": (
+                                f"[Imagen omitida por tamaño "
+                                f"> 20MB: {info['filename']}]"
+                            ),
+                        }
+                    )
+                    continue
+
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": info["data_url"],
+                        },
+                    }
+                )
+
+            except Exception as exc:
+
+                content.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            f"[No se pudo cargar imagen "
+                            f"{path}: {exc}]"
+                        ),
+                    }
+                )
+
+        return content
+
+    # ------------------------------------------------------------------
     # DEFINICIÓN DE HERRAMIENTAS
     # ------------------------------------------------------------------
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
 
-            # ----------------------------------------------------------
-            # ARCHIVOS
-            # ----------------------------------------------------------
+            # ==========================================================
+            # ARCHIVOS (básicos)
+            # ==========================================================
 
             {
                 "type": "function",
@@ -223,17 +333,10 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                            },
-                            "content": {
-                                "type": "string",
-                            },
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
                         },
-                        "required": [
-                            "path",
-                            "content",
-                        ],
+                        "required": ["path", "content"],
                     },
                 },
             },
@@ -248,17 +351,10 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                            },
-                            "content": {
-                                "type": "string",
-                            },
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
                         },
-                        "required": [
-                            "path",
-                            "content",
-                        ],
+                        "required": ["path", "content"],
                     },
                 },
             },
@@ -280,10 +376,7 @@ class Agent:
                                     "Patrón de búsqueda de pathlib."
                                 ),
                             },
-                            "path": {
-                                "type": "string",
-                                "default": ".",
-                            },
+                            "path": {"type": "string", "default": "."},
                         },
                         "required": ["query"],
                     },
@@ -300,9 +393,7 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                            }
+                            "path": {"type": "string"}
                         },
                         "required": ["path"],
                     },
@@ -313,15 +404,11 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_mkdir",
-                    "description": (
-                        "Crea una carpeta dentro del workspace."
-                    ),
+                    "description": "Crea una carpeta dentro del workspace.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                            }
+                            "path": {"type": "string"}
                         },
                         "required": ["path"],
                     },
@@ -338,17 +425,10 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "source": {
-                                "type": "string",
-                            },
-                            "destination": {
-                                "type": "string",
-                            },
+                            "source": {"type": "string"},
+                            "destination": {"type": "string"},
                         },
-                        "required": [
-                            "source",
-                            "destination",
-                        ],
+                        "required": ["source", "destination"],
                     },
                 },
             },
@@ -363,17 +443,10 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "source": {
-                                "type": "string",
-                            },
-                            "destination": {
-                                "type": "string",
-                            },
+                            "source": {"type": "string"},
+                            "destination": {"type": "string"},
                         },
-                        "required": [
-                            "source",
-                            "destination",
-                        ],
+                        "required": ["source", "destination"],
                     },
                 },
             },
@@ -389,9 +462,7 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                            },
+                            "path": {"type": "string"},
                             "recursive": {
                                 "type": "boolean",
                                 "default": False,
@@ -412,20 +483,13 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "output_zip": {
-                                "type": "string",
-                            },
+                            "output_zip": {"type": "string"},
                             "sources": {
                                 "type": "array",
-                                "items": {
-                                    "type": "string",
-                                },
+                                "items": {"type": "string"},
                             },
                         },
-                        "required": [
-                            "output_zip",
-                            "sources",
-                        ],
+                        "required": ["output_zip", "sources"],
                     },
                 },
             },
@@ -434,15 +498,11 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "list_zip",
-                    "description": (
-                        "Lista el contenido de un archivo ZIP."
-                    ),
+                    "description": "Lista el contenido de un archivo ZIP.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "zip_name": {
-                                "type": "string",
-                            }
+                            "zip_name": {"type": "string"}
                         },
                         "required": ["zip_name"],
                     },
@@ -453,15 +513,11 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "unzip_file",
-                    "description": (
-                        "Extrae un ZIP dentro del workspace."
-                    ),
+                    "description": "Extrae un ZIP dentro del workspace.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "zip_name": {
-                                "type": "string",
-                            },
+                            "zip_name": {"type": "string"},
                             "destination": {
                                 "type": "string",
                                 "default": ".",
@@ -472,9 +528,409 @@ class Agent:
                 },
             },
 
-            # ----------------------------------------------------------
+            # ==========================================================
+            # ARCHIVOS (nuevos: análisis / lectura avanzada)
+            # ==========================================================
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_detect_kind",
+                    "description": (
+                        "Detecta el tipo real de un archivo: "
+                        "image, pdf, text, binary o directory."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_read_any",
+                    "description": (
+                        "Lee cualquier archivo y devuelve algo útil: "
+                        "imagen (info), pdf (texto), texto (contenido), "
+                        "binario (info). Ideal para analizar "
+                        "adjuntos de Discord."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_read_pdf",
+                    "description": (
+                        "Extrae el texto de un archivo PDF."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_read_text",
+                    "description": (
+                        "Lee un archivo de texto detectando encoding "
+                        "automáticamente."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_image_info",
+                    "description": (
+                        "Devuelve información de una imagen: "
+                        "ancho, alto, formato, modo y tamaño."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_tree",
+                    "description": (
+                        "Devuelve un árbol recursivo del workspace."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "default": ".",
+                            },
+                            "max_depth": {
+                                "type": "integer",
+                                "default": 3,
+                            },
+                        },
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_grep",
+                    "description": (
+                        "Busca texto dentro de archivos del workspace."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {"type": "string"},
+                            "path": {
+                                "type": "string",
+                                "default": ".",
+                            },
+                            "extensions": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["pattern"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_head",
+                    "description": (
+                        "Devuelve las primeras N líneas de un archivo."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "lines": {
+                                "type": "integer",
+                                "default": 20,
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_tail",
+                    "description": (
+                        "Devuelve las últimas N líneas de un archivo."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "lines": {
+                                "type": "integer",
+                                "default": 20,
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_count_lines",
+                    "description": "Cuenta las líneas de un archivo.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_replace",
+                    "description": (
+                        "Reemplaza texto dentro de un archivo."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "old": {"type": "string"},
+                            "new": {"type": "string"},
+                            "count": {
+                                "type": "integer",
+                                "default": -1,
+                            },
+                        },
+                        "required": ["path", "old", "new"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_hash",
+                    "description": (
+                        "Devuelve el hash (sha256 por defecto) "
+                        "de un archivo."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "algorithm": {
+                                "type": "string",
+                                "default": "sha256",
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_exists",
+                    "description": (
+                        "Comprueba si una ruta existe dentro "
+                        "del workspace."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_backup",
+                    "description": (
+                        "Crea una copia de seguridad con timestamp "
+                        "de un archivo o carpeta. Úsalo SIEMPRE antes "
+                        "de modificar tu propio código."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_image_resize",
+                    "description": (
+                        "Redimensiona una imagen."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "output": {"type": "string"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"},
+                            "keep_aspect": {
+                                "type": "boolean",
+                                "default": True,
+                            },
+                        },
+                        "required": ["path", "output", "width"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_image_thumbnail",
+                    "description": "Genera un thumbnail de una imagen.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "output": {"type": "string"},
+                            "size": {
+                                "type": "integer",
+                                "default": 256,
+                            },
+                        },
+                        "required": ["path", "output"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_image_convert",
+                    "description": (
+                        "Convierte una imagen a otro formato."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "output": {"type": "string"},
+                            "format": {"type": "string"},
+                        },
+                        "required": ["path", "output"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_read_json",
+                    "description": "Lee un archivo JSON.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_write_json",
+                    "description": (
+                        "Escribe un archivo JSON a partir de un objeto."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "data": {},
+                            "indent": {
+                                "type": "integer",
+                                "default": 2,
+                            },
+                        },
+                        "required": ["path", "data"],
+                    },
+                },
+            },
+
+            {
+                "type": "function",
+                "function": {
+                    "name": "file_read_csv",
+                    "description": (
+                        "Lee un CSV y devuelve las filas como dicts."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "max_rows": {"type": "integer"},
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+
+            # ==========================================================
             # GITHUB
-            # ----------------------------------------------------------
+            # ==========================================================
 
             {
                 "type": "function",
@@ -505,14 +961,9 @@ class Agent:
                                 "type": "string",
                                 "description": "owner/repo",
                             },
-                            "path": {
-                                "type": "string",
-                            },
+                            "path": {"type": "string"},
                         },
-                        "required": [
-                            "repo",
-                            "path",
-                        ],
+                        "required": ["repo", "path"],
                     },
                 },
             },
@@ -527,18 +978,10 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "repo": {
-                                "type": "string",
-                            },
-                            "path": {
-                                "type": "string",
-                            },
-                            "content": {
-                                "type": "string",
-                            },
-                            "message": {
-                                "type": "string",
-                            },
+                            "repo": {"type": "string"},
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
+                            "message": {"type": "string"},
                         },
                         "required": [
                             "repo",
@@ -550,17 +993,15 @@ class Agent:
                 },
             },
 
-            # ----------------------------------------------------------
+            # ==========================================================
             # VERCEL
-            # ----------------------------------------------------------
+            # ==========================================================
 
             {
                 "type": "function",
                 "function": {
                     "name": "vercel_projects",
-                    "description": (
-                        "Lista proyectos de Vercel."
-                    ),
+                    "description": "Lista proyectos de Vercel.",
                     "parameters": {
                         "type": "object",
                         "properties": {},
@@ -578,18 +1019,16 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "project": {
-                                "type": "string",
-                            }
+                            "project": {"type": "string"}
                         },
                         "required": ["project"],
                     },
                 },
             },
 
-            # ----------------------------------------------------------
+            # ==========================================================
             # FLUX
-            # ----------------------------------------------------------
+            # ==========================================================
 
             {
                 "type": "function",
@@ -602,9 +1041,7 @@ class Agent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "prompt": {
-                                "type": "string",
-                            }
+                            "prompt": {"type": "string"}
                         },
                         "required": ["prompt"],
                     },
@@ -624,9 +1061,9 @@ class Agent:
 
         try:
 
-            # ----------------------------------------------------------
-            # ARCHIVOS
-            # ----------------------------------------------------------
+            # ==========================================================
+            # ARCHIVOS (básicos)
+            # ==========================================================
 
             if name == "file_list":
                 return {
@@ -725,9 +1162,174 @@ class Agent:
                     )
                 }
 
-            # ----------------------------------------------------------
+            # ==========================================================
+            # ARCHIVOS (nuevos: análisis / lectura avanzada)
+            # ==========================================================
+
+            if name == "file_detect_kind":
+                return {
+                    "kind": self.files.detect_kind(
+                        args["path"]
+                    )
+                }
+
+            if name == "file_read_any":
+                data = self.files.read_any(args["path"])
+
+                # Evitar devolver el base64 completo como texto.
+                if isinstance(data, dict):
+                    data.pop("base64", None)
+                    data.pop("data_url", None)
+
+                return data
+
+            if name == "file_read_pdf":
+                return {
+                    "text": self.files.read_pdf_text(
+                        args["path"]
+                    )
+                }
+
+            if name == "file_read_text":
+                return {
+                    "text": self.files.read_text_auto(
+                        args["path"]
+                    )
+                }
+
+            if name == "file_image_info":
+                return self.files.image_info(
+                    args["path"]
+                )
+
+            if name == "file_tree":
+                return self.files.tree(
+                    args.get("path", "."),
+                    int(args.get("max_depth", 3)),
+                )
+
+            if name == "file_grep":
+                return {
+                    "results": self.files.grep(
+                        args["pattern"],
+                        args.get("path", "."),
+                        args.get("extensions"),
+                    )
+                }
+
+            if name == "file_head":
+                return {
+                    "text": self.files.head_file(
+                        args["path"],
+                        int(args.get("lines", 20)),
+                    )
+                }
+
+            if name == "file_tail":
+                return {
+                    "text": self.files.tail_file(
+                        args["path"],
+                        int(args.get("lines", 20)),
+                    )
+                }
+
+            if name == "file_count_lines":
+                return {
+                    "lines": self.files.count_lines(
+                        args["path"]
+                    )
+                }
+
+            if name == "file_replace":
+                return self.files.replace_in_file(
+                    args["path"],
+                    args["old"],
+                    args["new"],
+                    int(args.get("count", -1)),
+                )
+
+            if name == "file_hash":
+                return self.files.file_hash(
+                    args["path"],
+                    args.get("algorithm", "sha256"),
+                )
+
+            if name == "file_exists":
+                return {
+                    "exists": self.files.exists(
+                        args["path"]
+                    )
+                }
+
+            if name == "file_backup":
+                return {
+                    "backup": self.files.backup(
+                        args["path"]
+                    )
+                }
+
+            if name == "file_image_resize":
+                return {
+                    "path": self.files.image_resize(
+                        args["path"],
+                        args["output"],
+                        int(args["width"]),
+                        (
+                            int(args["height"])
+                            if args.get("height")
+                            else None
+                        ),
+                        bool(args.get("keep_aspect", True)),
+                    )
+                }
+
+            if name == "file_image_thumbnail":
+                return {
+                    "path": self.files.image_thumbnail(
+                        args["path"],
+                        args["output"],
+                        int(args.get("size", 256)),
+                    )
+                }
+
+            if name == "file_image_convert":
+                return {
+                    "path": self.files.image_convert(
+                        args["path"],
+                        args["output"],
+                        args.get("format"),
+                    )
+                }
+
+            if name == "file_read_json":
+                return {
+                    "data": self.files.read_json(
+                        args["path"]
+                    )
+                }
+
+            if name == "file_write_json":
+                return {
+                    "path": self.files.write_json(
+                        args["path"],
+                        args["data"],
+                        int(args.get("indent", 2)),
+                    )
+                }
+
+            if name == "file_read_csv":
+                max_rows = args.get("max_rows")
+
+                return {
+                    "rows": self.files.read_csv(
+                        args["path"],
+                        int(max_rows) if max_rows else None,
+                    )
+                }
+
+            # ==========================================================
             # GITHUB
-            # ----------------------------------------------------------
+            # ==========================================================
 
             if name == "github_list":
                 return await self.github_request(
@@ -747,9 +1349,9 @@ class Agent:
             if name == "github_write":
                 return await self.github_write(args)
 
-            # ----------------------------------------------------------
+            # ==========================================================
             # VERCEL
-            # ----------------------------------------------------------
+            # ==========================================================
 
             if name == "vercel_projects":
                 return await self.vercel_request(
@@ -768,9 +1370,9 @@ class Agent:
                     f"/v6/deployments?projectId={project}&limit=20",
                 )
 
-            # ----------------------------------------------------------
+            # ==========================================================
             # FLUX
-            # ----------------------------------------------------------
+            # ==========================================================
 
             if name == "generate_image":
                 return await self.generate_image(
@@ -886,7 +1488,6 @@ class Agent:
 
             sha = None
 
-            # Comprobar si ya existe.
             async with session.get(
                 url,
                 headers=headers,
@@ -1009,7 +1610,6 @@ class Agent:
 
         key = self._flux_keys[0]
 
-        # Rotación de claves.
         self._flux_keys.rotate(-1)
 
         base = config.flux_base_url.rstrip("/")
@@ -1029,9 +1629,7 @@ class Agent:
             async with session.post(
                 f"{base}/{config.flux_endpoint}",
                 headers=headers,
-                json={
-                    "prompt": prompt
-                },
+                json={"prompt": prompt},
             ) as response:
 
                 data = await response.json(
@@ -1052,13 +1650,9 @@ class Agent:
                     or data.get("task_id")
                 )
 
-            # Algunas APIs devuelven directamente el resultado.
             if not task_id:
-                return {
-                    "result": data
-                }
+                return {"result": data}
 
-            # Esperar resultado.
             for _ in range(60):
 
                 await asyncio.sleep(2)
@@ -1091,38 +1685,22 @@ class Agent:
                         "completed",
                     }:
 
-                        nested = result.get(
-                            "result"
-                        )
+                        nested = result.get("result")
 
                         sample = None
 
-                        if isinstance(
-                            nested,
-                            dict,
-                        ):
-                            sample = nested.get(
-                                "sample"
-                            )
+                        if isinstance(nested, dict):
+                            sample = nested.get("sample")
 
                         if not sample:
-                            sample = result.get(
-                                "sample"
-                            )
+                            sample = result.get("sample")
 
                         if sample:
-                            return {
-                                "image_url": sample
-                            }
+                            return {"image_url": sample}
 
-                        return {
-                            "result": result
-                        }
+                        return {"result": result}
 
-                    if status in {
-                        "failed",
-                        "error",
-                    }:
+                    if status in {"failed", "error"}:
                         return {
                             "error": (
                                 "La generación de "
@@ -1152,7 +1730,6 @@ class Agent:
 
         await self.cleanup_memory()
 
-        # Guardar mensaje real del usuario.
         await self.save(
             user_id,
             channel_id,
@@ -1164,6 +1741,27 @@ class Agent:
             user_id,
             channel_id,
         )
+
+        # ----------------------------------------------------------
+        # VISIÓN: si el prompt trae rutas de imágenes,
+        # las inyectamos como contenido multimodal.
+        # ----------------------------------------------------------
+
+        image_paths = self._extract_image_paths(prompt)
+
+        if image_paths and messages:
+
+            multimodal = self._build_multimodal_content(
+                prompt,
+                image_paths,
+            )
+
+            # El último mensaje es el que acabamos de guardar.
+            if messages[-1].get("role") == "user":
+                messages[-1] = {
+                    "role": "user",
+                    "content": multimodal,
+                }
 
         if force_image:
             messages.append(
@@ -1273,28 +1871,17 @@ class Agent:
                     "{}",
                 )
 
-                if isinstance(
-                    raw_args,
-                    str,
-                ):
+                if isinstance(raw_args, str):
                     try:
-                        args = json.loads(
-                            raw_args
-                        )
+                        args = json.loads(raw_args)
                     except json.JSONDecodeError:
                         args = {}
-                elif isinstance(
-                    raw_args,
-                    dict,
-                ):
+                elif isinstance(raw_args, dict):
                     args = raw_args
                 else:
                     args = {}
 
-                if not isinstance(
-                    args,
-                    dict,
-                ):
+                if not isinstance(args, dict):
                     args = {}
 
                 result = await self.run_tool(
@@ -1302,16 +1889,12 @@ class Agent:
                     args,
                 )
 
-                # Guardar URL si FLUX produjo una imagen.
                 if (
                     isinstance(result, dict)
                     and result.get("image_url")
                 ):
-                    image_url = result[
-                        "image_url"
-                    ]
+                    image_url = result["image_url"]
 
-                # OpenAI-compatible tool message.
                 messages.append(
                     {
                         "role": "tool",
