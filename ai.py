@@ -50,7 +50,6 @@ class Agent:
         "minimax/minimax-m2.7:free",
         "cohere/north-mini-code:free",
         "z-ai/glm-4.5-air:free",
-        "z-ai/glm-4.5:free",
         "stepfun/step-3.5-flash:free",
         "arcee-ai/trinity-large-preview:free",
         "nvidia/nemotron-3-super-120b-a12b:free",
@@ -71,7 +70,6 @@ class Agent:
         "poolside/laguna-xs-2.1:free",
         "poolside/laguna-s-2.1:free",
         "liquid/lfm-2.5-1.2b-thinking:free",
-        "nvidia/nemotron-3-nano-30b-a3b:free",
         "nvidia/nemotron-3.5-lightning:free",
         "qwen/qwen3.5-9b:free",
         "microsoft/phi-4:free",
@@ -95,12 +93,10 @@ class Agent:
         "deepseek/deepseek-r1:free",
         "deepseek/deepseek-chat-v3.1:free",
         "z-ai/glm-4.5-air:free",
-        "z-ai/glm-4.5:free",
         "meta-llama/llama-3.3-70b-instruct:free",
         "meta-llama/llama-3.1-8b-instruct:free",
         "stepfun/step-3.5-flash:free",
         "arcee-ai/trinity-large-preview:free",
-        "nvidia/nemotron-3-nano-30b-a3b:free",
         "openai/gpt-oss-120b:free",
         "openai/gpt-oss-20b:free",
         "qwen/qwen3-next-80b-a3b-instruct:free",
@@ -179,6 +175,7 @@ class Agent:
             )
 
         await self._refresh_vision_models()
+        await self._refresh_free_models()
 
         try:
             await motor.prewarm()
@@ -203,7 +200,13 @@ class Agent:
             config.memory_limit,
         )
 
-    async def save(self, user_id: int, channel_id: int, role: str, content: str) -> None:
+    async def save(
+        self,
+        user_id: int,
+        channel_id: int,
+        role: str,
+        content: str,
+    ) -> None:
         if not self.pool:
             return
         await self.pool.execute(
@@ -211,10 +214,17 @@ class Agent:
             INSERT INTO subtom_memory(user_id, channel_id, role, content)
             VALUES($1, $2, $3, $4)
             """,
-            user_id, channel_id, role, content[:30000],
+            user_id,
+            channel_id,
+            role,
+            content[:30000],
         )
 
-    async def history(self, user_id: int, channel_id: int) -> list[dict[str, Any]]:
+    async def history(
+        self,
+        user_id: int,
+        channel_id: int,
+    ) -> list[dict[str, Any]]:
         if not self.pool:
             return []
         rows = await self.pool.fetch(
@@ -225,10 +235,15 @@ class Agent:
             ORDER BY created_at DESC
             LIMIT $3
             """,
-            user_id, channel_id, config.memory_messages,
+            user_id,
+            channel_id,
+            config.memory_messages,
         )
         rows = list(reversed(rows))
-        return [{"role": row["role"], "content": row["content"]} for row in rows]
+        return [
+            {"role": row["role"], "content": row["content"]}
+            for row in rows
+        ]
 
     # ==================================================================
     # DETECCIÓN DINÁMICA DE MODELOS CON VISIÓN
@@ -238,16 +253,22 @@ class Agent:
         try:
             timeout = aiohttp.ClientTimeout(total=20)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get("https://openrouter.ai/api/v1/models") as resp:
+                async with session.get(
+                    "https://openrouter.ai/api/v1/models"
+                ) as resp:
                     data = await resp.json(content_type=None)
         except Exception as exc:
-            print(f"[VISION] No se pudo cargar lista de modelos: {exc}. Usando lista estática.")
+            print(
+                f"[VISION] No se pudo cargar lista de modelos: {exc}. "
+                f"Usando lista estática como respaldo."
+            )
             self._vision_models = list(self.VISION_MODELS)
             self._vision_loaded = False
             return
 
         models = data.get("data") or []
-        vision_free = []
+        vision_free: list[str] = []
+
         for m in models:
             model_id = m.get("id", "")
             if not model_id.endswith(":free"):
@@ -258,7 +279,10 @@ class Agent:
                 vision_free.append(model_id)
 
         if not vision_free:
-            print("[VISION] OpenRouter no devolvió modelos free con visión. Usando lista estática.")
+            print(
+                "[VISION] OpenRouter no devolvió modelos free con visión. "
+                "Usando lista estática."
+            )
             self._vision_models = list(self.VISION_MODELS)
             self._vision_loaded = False
             return
@@ -272,45 +296,130 @@ class Agent:
             print(f"  ... y {len(vision_free) - 10} más")
 
     # ==================================================================
+    # DETECCIÓN DINÁMICA DE MODELOS FREE (TEXTO / CÓDIGO)
+    # ==================================================================
+
+    async def _refresh_free_models(self) -> None:
+        """
+        Consulta OpenRouter y actualiza las listas de modelos free
+        que EXISTEN actualmente. Filtra los que ya no están.
+        """
+        try:
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://openrouter.ai/api/v1/models"
+                ) as resp:
+                    data = await resp.json(content_type=None)
+        except Exception as exc:
+            print(f"[MODELS] No se pudo refrescar lista: {exc}")
+            return
+
+        models = data.get("data") or []
+
+        free_ids: set[str] = set()
+        for m in models:
+            model_id = m.get("id", "")
+            if model_id.endswith(":free"):
+                free_ids.add(model_id)
+
+        if not free_ids:
+            print("[MODELS] OpenRouter no devolvió modelos :free")
+            return
+
+        old_code = len(self.CODE_MODELS)
+        old_text = len(self.TEXT_MODELS)
+
+        self.CODE_MODELS = [
+            m for m in self.CODE_MODELS if m in free_ids
+        ]
+        self.TEXT_MODELS = [
+            m for m in self.TEXT_MODELS if m in free_ids
+        ]
+
+        # Añadir modelos nuevos que aparezcan
+        for mid in free_ids:
+            if mid in self.CODE_MODELS or mid in self.TEXT_MODELS:
+                continue
+            lower = mid.lower()
+            if any(k in lower for k in ("coder", "code", "devstral", "laguna")):
+                self.CODE_MODELS.append(mid)
+            else:
+                self.TEXT_MODELS.append(mid)
+
+        print(
+            f"[MODELS] CODE: {old_code}→{len(self.CODE_MODELS)} | "
+            f"TEXT: {old_text}→{len(self.TEXT_MODELS)}"
+        )
+
+    # ==================================================================
     # VISIÓN
     # ==================================================================
 
     def _extract_image_paths(self, prompt: str) -> list[str]:
-        paths = []
-        for match in re.finditer(r"->\s*ruta local:\s*(\S+)", prompt):
+        paths: list[str] = []
+        for match in re.finditer(
+            r"->\s*ruta local:\s*(\S+)",
+            prompt,
+        ):
             raw = match.group(1).strip().strip('",')
             try:
                 p = Path(raw)
-                if p.suffix.lower() in IMAGE_EXTENSIONS and p.exists() and p.is_file():
+                if (
+                    p.suffix.lower() in IMAGE_EXTENSIONS
+                    and p.exists()
+                    and p.is_file()
+                ):
                     paths.append(str(p))
             except Exception:
                 continue
-        seen = set()
-        unique = []
+
+        seen: set[str] = set()
+        unique: list[str] = []
         for p in paths:
             if p not in seen:
                 seen.add(p)
                 unique.append(p)
         return unique
 
-    def _build_multimodal_content(self, prompt: str, image_paths: list[str]) -> list[dict[str, Any]]:
-        content = [{"type": "text", "text": prompt}]
+    def _build_multimodal_content(
+        self,
+        prompt: str,
+        image_paths: list[str],
+    ) -> list[dict[str, Any]]:
+        content: list[dict[str, Any]] = [
+            {"type": "text", "text": prompt}
+        ]
         for path in image_paths:
             try:
                 info = self.files.read_image_base64(path)
                 if info["size"] > 20 * 1024 * 1024:
-                    content.append({"type": "text", "text": f"[Imagen omitida por tamaño >20MB: {info['filename']}]"})
+                    content.append({
+                        "type": "text",
+                        "text": f"[Imagen omitida por tamaño >20MB: {info['filename']}]",
+                    })
                     continue
-                content.append({"type": "image_url", "image_url": {"url": info["data_url"]}})
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": info["data_url"]},
+                })
             except Exception as exc:
-                content.append({"type": "text", "text": f"[No se pudo cargar imagen {path}: {exc}]"})
+                content.append({
+                    "type": "text",
+                    "text": f"[No se pudo cargar imagen {path}: {exc}]",
+                })
         return content
 
     # ==================================================================
     # SELECCIÓN DE MODELO SEGÚN LA TAREA
     # ==================================================================
 
-    def _select_model(self, prompt: str, task: TaskType, force_image: bool = False) -> list[str]:
+    def _select_model(
+        self,
+        prompt: str,
+        task: TaskType,
+        force_image: bool = False,
+    ) -> list[str]:
         vision_list = self._vision_models or self.VISION_MODELS
         if force_image or task == TaskType.IMAGE_GEN:
             return vision_list
@@ -331,12 +440,21 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "web_search",
-                    "description": "Busca información actual en internet con DuckDuckGo. Devuelve título, URL y snippet. Usa web_fetch después para leer una URL.",
+                    "description": (
+                        "Busca información actual en internet con "
+                        "DuckDuckGo. Devuelve título, URL y snippet. "
+                        "Usa web_fetch después para leer una URL."
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "query": {"type": "string", "description": "Consulta en lenguaje natural."},
-                            "max_results": {"type": "integer", "default": 5, "minimum": 1, "maximum": 10},
+                            "query": {"type": "string"},
+                            "max_results": {
+                                "type": "integer",
+                                "default": 5,
+                                "minimum": 1,
+                                "maximum": 10,
+                            },
                         },
                         "required": ["query"],
                     },
@@ -346,12 +464,21 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "web_fetch",
-                    "description": "Descarga una página web y devuelve el texto legible de su contenido. Úsala DESPUÉS de web_search para leer una URL concreta.",
+                    "description": (
+                        "Descarga una página web y devuelve el texto "
+                        "legible de su contenido. Úsala DESPUÉS de "
+                        "web_search para leer una URL concreta."
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "url": {"type": "string", "description": "URL completa (http/https)."},
-                            "max_chars": {"type": "integer", "default": 8000, "minimum": 500, "maximum": 30000},
+                            "url": {"type": "string"},
+                            "max_chars": {
+                                "type": "integer",
+                                "default": 8000,
+                                "minimum": 500,
+                                "maximum": 30000,
+                            },
                         },
                         "required": ["url"],
                     },
@@ -362,10 +489,12 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_list",
-                    "description": "Lista archivos y carpetas dentro del workspace seguro de Subtom.",
+                    "description": "Lista archivos y carpetas del workspace.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string", "description": "Ruta relativa dentro del workspace.", "default": "."}},
+                        "properties": {
+                            "path": {"type": "string", "default": "."},
+                        },
                     },
                 },
             },
@@ -373,7 +502,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_read",
-                    "description": "Lee un archivo de texto dentro del workspace.",
+                    "description": "Lee un archivo de texto del workspace.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -385,10 +514,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_write",
-                    "description": "Crea o reemplaza completamente un archivo de texto dentro del workspace.",
+                    "description": "Crea o reemplaza un archivo de texto.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
+                        },
                         "required": ["path", "content"],
                     },
                 },
@@ -400,7 +532,10 @@ class Agent:
                     "description": "Añade contenido al final de un archivo.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
+                        },
                         "required": ["path", "content"],
                     },
                 },
@@ -409,10 +544,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_search",
-                    "description": "Busca archivos y carpetas mediante un patrón dentro del workspace.",
+                    "description": "Busca archivos por patrón.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"query": {"type": "string"}, "path": {"type": "string", "default": "."}},
+                        "properties": {
+                            "query": {"type": "string"},
+                            "path": {"type": "string", "default": "."},
+                        },
                         "required": ["query"],
                     },
                 },
@@ -421,7 +559,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_info",
-                    "description": "Obtiene información sobre un archivo o carpeta.",
+                    "description": "Info de un archivo o carpeta.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -433,7 +571,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_mkdir",
-                    "description": "Crea una carpeta dentro del workspace.",
+                    "description": "Crea una carpeta.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -445,10 +583,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_copy",
-                    "description": "Copia un archivo o carpeta dentro del workspace.",
+                    "description": "Copia un archivo o carpeta.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"source": {"type": "string"}, "destination": {"type": "string"}},
+                        "properties": {
+                            "source": {"type": "string"},
+                            "destination": {"type": "string"},
+                        },
                         "required": ["source", "destination"],
                     },
                 },
@@ -457,10 +598,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_move",
-                    "description": "Mueve o renombra un archivo o carpeta.",
+                    "description": "Mueve o renombra un archivo.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"source": {"type": "string"}, "destination": {"type": "string"}},
+                        "properties": {
+                            "source": {"type": "string"},
+                            "destination": {"type": "string"},
+                        },
                         "required": ["source", "destination"],
                     },
                 },
@@ -469,10 +613,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_delete",
-                    "description": "Elimina un archivo o carpeta. Debe usarse con cuidado.",
+                    "description": "Elimina un archivo o carpeta.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean", "default": False}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "recursive": {"type": "boolean", "default": False},
+                        },
                         "required": ["path"],
                     },
                 },
@@ -481,10 +628,16 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "create_zip",
-                    "description": "Crea un archivo ZIP dentro del workspace.",
+                    "description": "Crea un ZIP.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"output_zip": {"type": "string"}, "sources": {"type": "array", "items": {"type": "string"}}},
+                        "properties": {
+                            "output_zip": {"type": "string"},
+                            "sources": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
                         "required": ["output_zip", "sources"],
                     },
                 },
@@ -493,7 +646,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "list_zip",
-                    "description": "Lista el contenido de un archivo ZIP.",
+                    "description": "Lista contenido de un ZIP.",
                     "parameters": {
                         "type": "object",
                         "properties": {"zip_name": {"type": "string"}},
@@ -505,10 +658,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "unzip_file",
-                    "description": "Extrae un ZIP dentro del workspace.",
+                    "description": "Extrae un ZIP.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"zip_name": {"type": "string"}, "destination": {"type": "string", "default": "."}},
+                        "properties": {
+                            "zip_name": {"type": "string"},
+                            "destination": {"type": "string", "default": "."},
+                        },
                         "required": ["zip_name"],
                     },
                 },
@@ -517,7 +673,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_detect_kind",
-                    "description": "Detecta el tipo real de un archivo: image, pdf, text, binary o directory.",
+                    "description": "Detecta tipo de archivo.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -529,7 +685,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_read_any",
-                    "description": "Lee cualquier archivo y devuelve algo útil: imagen (info), pdf (texto), texto (contenido), binario (info).",
+                    "description": "Lee cualquier archivo y devuelve algo útil.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -541,7 +697,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_read_pdf",
-                    "description": "Extrae el texto de un archivo PDF.",
+                    "description": "Extrae texto de un PDF.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -553,7 +709,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_read_text",
-                    "description": "Lee un archivo de texto detectando encoding automáticamente.",
+                    "description": "Lee archivo de texto detectando encoding.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -565,7 +721,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_image_info",
-                    "description": "Devuelve información de una imagen: ancho, alto, formato, modo y tamaño.",
+                    "description": "Info de una imagen.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -577,10 +733,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_tree",
-                    "description": "Devuelve un árbol recursivo del workspace.",
+                    "description": "Árbol recursivo del workspace.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string", "default": "."}, "max_depth": {"type": "integer", "default": 3}},
+                        "properties": {
+                            "path": {"type": "string", "default": "."},
+                            "max_depth": {"type": "integer", "default": 3},
+                        },
                     },
                 },
             },
@@ -588,10 +747,17 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_grep",
-                    "description": "Busca texto dentro de archivos del workspace.",
+                    "description": "Busca texto en archivos del workspace.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"pattern": {"type": "string"}, "path": {"type": "string", "default": "."}, "extensions": {"type": "array", "items": {"type": "string"}}},
+                        "properties": {
+                            "pattern": {"type": "string"},
+                            "path": {"type": "string", "default": "."},
+                            "extensions": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
                         "required": ["pattern"],
                     },
                 },
@@ -600,10 +766,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_head",
-                    "description": "Devuelve las primeras N líneas de un archivo.",
+                    "description": "Primeras N líneas de un archivo.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "lines": {"type": "integer", "default": 20}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "lines": {"type": "integer", "default": 20},
+                        },
                         "required": ["path"],
                     },
                 },
@@ -612,10 +781,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_tail",
-                    "description": "Devuelve las últimas N líneas de un archivo.",
+                    "description": "Últimas N líneas de un archivo.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "lines": {"type": "integer", "default": 20}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "lines": {"type": "integer", "default": 20},
+                        },
                         "required": ["path"],
                     },
                 },
@@ -624,7 +796,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_count_lines",
-                    "description": "Cuenta las líneas de un archivo.",
+                    "description": "Cuenta líneas de un archivo.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -636,10 +808,15 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_replace",
-                    "description": "Reemplaza texto dentro de un archivo.",
+                    "description": "Reemplaza texto en un archivo.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}, "count": {"type": "integer", "default": -1}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "old": {"type": "string"},
+                            "new": {"type": "string"},
+                            "count": {"type": "integer", "default": -1},
+                        },
                         "required": ["path", "old", "new"],
                     },
                 },
@@ -648,10 +825,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_hash",
-                    "description": "Devuelve el hash (sha256 por defecto) de un archivo.",
+                    "description": "Hash de un archivo.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "algorithm": {"type": "string", "default": "sha256"}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "algorithm": {"type": "string", "default": "sha256"},
+                        },
                         "required": ["path"],
                     },
                 },
@@ -660,7 +840,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_exists",
-                    "description": "Comprueba si una ruta existe dentro del workspace.",
+                    "description": "Comprueba si existe una ruta.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -672,7 +852,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_backup",
-                    "description": "Crea una copia de seguridad con timestamp de un archivo o carpeta. Úsalo SIEMPRE antes de modificar tu propio código.",
+                    "description": "Copia de seguridad con timestamp.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -687,7 +867,13 @@ class Agent:
                     "description": "Redimensiona una imagen.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "output": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"}, "keep_aspect": {"type": "boolean", "default": True}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "output": {"type": "string"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"},
+                            "keep_aspect": {"type": "boolean", "default": True},
+                        },
                         "required": ["path", "output", "width"],
                     },
                 },
@@ -696,10 +882,14 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_image_thumbnail",
-                    "description": "Genera un thumbnail de una imagen.",
+                    "description": "Thumbnail de una imagen.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "output": {"type": "string"}, "size": {"type": "integer", "default": 256}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "output": {"type": "string"},
+                            "size": {"type": "integer", "default": 256},
+                        },
                         "required": ["path", "output"],
                     },
                 },
@@ -708,10 +898,14 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_image_convert",
-                    "description": "Convierte una imagen a otro formato.",
+                    "description": "Convierte formato de imagen.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "output": {"type": "string"}, "format": {"type": "string"}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "output": {"type": "string"},
+                            "format": {"type": "string"},
+                        },
                         "required": ["path", "output"],
                     },
                 },
@@ -720,7 +914,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_read_json",
-                    "description": "Lee un archivo JSON.",
+                    "description": "Lee un JSON.",
                     "parameters": {
                         "type": "object",
                         "properties": {"path": {"type": "string"}},
@@ -732,10 +926,14 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_write_json",
-                    "description": "Escribe un archivo JSON a partir de un objeto.",
+                    "description": "Escribe un JSON.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "data": {}, "indent": {"type": "integer", "default": 2}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "data": {},
+                            "indent": {"type": "integer", "default": 2},
+                        },
                         "required": ["path", "data"],
                     },
                 },
@@ -744,20 +942,23 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "file_read_csv",
-                    "description": "Lee un CSV y devuelve las filas como dicts.",
+                    "description": "Lee CSV como lista de dicts.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "max_rows": {"type": "integer"}},
+                        "properties": {
+                            "path": {"type": "string"},
+                            "max_rows": {"type": "integer"},
+                        },
                         "required": ["path"],
                     },
                 },
             },
-            # ------------------------- GITHUB BÁSICO -------------------------
+            # ------------------------- GITHUB -------------------------
             {
                 "type": "function",
                 "function": {
                     "name": "github_list",
-                    "description": "Lista los repositorios del usuario autenticado en GitHub.",
+                    "description": "Lista repos del usuario.",
                     "parameters": {"type": "object", "properties": {}},
                 },
             },
@@ -765,10 +966,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "github_read",
-                    "description": "Lee un archivo de un repositorio GitHub.",
+                    "description": "Lee archivo de un repo.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "path": {"type": "string"}},
+                        "properties": {
+                            "repo": {"type": "string"},
+                            "path": {"type": "string"},
+                        },
                         "required": ["repo", "path"],
                     },
                 },
@@ -777,29 +981,31 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "github_write",
-                    "description": "Crea o actualiza un archivo en GitHub.",
+                    "description": "Crea/actualiza archivo en GitHub.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"repo": {"type": "string"}, "path": {"type": "string"}, "content": {"type": "string"}, "message": {"type": "string"}},
+                        "properties": {
+                            "repo": {"type": "string"},
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
+                            "message": {"type": "string"},
+                        },
                         "required": ["repo", "path", "content", "message"],
                     },
                 },
             },
-            # ========================================================
-            # GITHUB AVANZADO
-            # ========================================================
             {
                 "type": "function",
                 "function": {
                     "name": "github_upload_file",
-                    "description": "Sube un archivo (texto o binario como PNG) al repositorio. Úsalo para subir el logo generado por FLUX usando su local_path.",
+                    "description": "Sube archivo (texto o binario) a GitHub.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "repo": {"type": "string", "description": "owner/repo"},
-                            "repo_path": {"type": "string", "description": "Ruta destino en el repo (ej: 'public/logo.png')"},
-                            "local_path": {"type": "string", "description": "Ruta del archivo dentro del workspace (ej: 'generated/logo.png')"},
-                            "message": {"type": "string", "description": "Mensaje del commit"},
+                            "repo": {"type": "string"},
+                            "repo_path": {"type": "string"},
+                            "local_path": {"type": "string"},
+                            "message": {"type": "string"},
                         },
                         "required": ["repo", "repo_path", "local_path", "message"],
                     },
@@ -809,13 +1015,13 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "github_upload_project",
-                    "description": "Sube VARIOS archivos del workspace a GitHub en UN SOLO commit. Úsalo para subir un proyecto completo de golpe.",
+                    "description": "Sube varios archivos en UN commit.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "repo": {"type": "string", "description": "owner/repo"},
-                            "files": {"type": "object", "description": "Diccionario {ruta_en_repo: ruta_en_workspace}. Ej: {'index.html': 'myapp/index.html', 'logo.png': 'generated/logo.png'}"},
-                            "message": {"type": "string", "description": "Mensaje del commit"},
+                            "repo": {"type": "string"},
+                            "files": {"type": "object"},
+                            "message": {"type": "string"},
                             "branch": {"type": "string", "default": "main"},
                         },
                         "required": ["repo", "files", "message"],
@@ -826,166 +1032,24 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "github_create_repo",
-                    "description": "Crea un repositorio nuevo en GitHub para el usuario autenticado.",
+                    "description": "Crea un repo en GitHub.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "private": {"type": "boolean", "default": False}},
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "private": {"type": "boolean", "default": False},
+                        },
                         "required": ["name"],
                     },
                 },
             },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_create_issue",
-                    "description": "Crea un issue en un repositorio de GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "title": {"type": "string"}, "body": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}}},
-                        "required": ["repo", "title"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_list_issues",
-                    "description": "Lista los issues de un repositorio de GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "state": {"type": "string", "default": "open", "enum": ["open", "closed", "all"]}},
-                        "required": ["repo"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_create_pr",
-                    "description": "Crea un pull request en un repositorio de GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "title": {"type": "string"}, "head": {"type": "string", "description": "Rama con los cambios"}, "base": {"type": "string", "default": "main", "description": "Rama destino"}, "body": {"type": "string"}},
-                        "required": ["repo", "title", "head"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_list_prs",
-                    "description": "Lista los pull requests de un repositorio de GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "state": {"type": "string", "default": "open", "enum": ["open", "closed", "all"]}},
-                        "required": ["repo"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_merge_pr",
-                    "description": "Fusiona un pull request en un repositorio de GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "pr_number": {"type": "integer"}, "merge_method": {"type": "string", "default": "merge", "enum": ["merge", "squash", "rebase"]}},
-                        "required": ["repo", "pr_number"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_list_branches",
-                    "description": "Lista las ramas de un repositorio de GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}},
-                        "required": ["repo"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_delete_branch",
-                    "description": "Elimina una rama de un repositorio de GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "branch": {"type": "string"}},
-                        "required": ["repo", "branch"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_get_commit",
-                    "description": "Obtiene información detallada de un commit en GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "sha": {"type": "string"}},
-                        "required": ["repo", "sha"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_list_commits",
-                    "description": "Lista los commits de un repositorio de GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "branch": {"type": "string", "default": "main"}, "per_page": {"type": "integer", "default": 10}},
-                        "required": ["repo"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_get_file",
-                    "description": "Obtiene el contenido y metadatos de un archivo en GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "path": {"type": "string"}, "ref": {"type": "string", "default": "main"}},
-                        "required": ["repo", "path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_update_file",
-                    "description": "Actualiza un archivo existente en GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "path": {"type": "string"}, "content": {"type": "string"}, "message": {"type": "string"}, "sha": {"type": "string", "description": "SHA del archivo a actualizar"}},
-                        "required": ["repo", "path", "content", "message", "sha"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_delete_file",
-                    "description": "Elimina un archivo de un repositorio de GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"repo": {"type": "string", "description": "owner/repo"}, "path": {"type": "string"}, "message": {"type": "string"}, "sha": {"type": "string", "description": "SHA del archivo a eliminar"}},
-                        "required": ["repo", "path", "message", "sha"],
-                    },
-                },
-            },
-            # ========================================================
-            # VERCEL BÁSICO
-            # ========================================================
+            # ------------------------- VERCEL -------------------------
             {
                 "type": "function",
                 "function": {
                     "name": "vercel_projects",
-                    "description": "Lista proyectos de Vercel.",
+                    "description": "Lista proyectos Vercel.",
                     "parameters": {"type": "object", "properties": {}},
                 },
             },
@@ -993,7 +1057,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "vercel_deployments",
-                    "description": "Lista deployments de un proyecto Vercel.",
+                    "description": "Lista deployments de un proyecto.",
                     "parameters": {
                         "type": "object",
                         "properties": {"project": {"type": "string"}},
@@ -1001,14 +1065,11 @@ class Agent:
                     },
                 },
             },
-            # ========================================================
-            # VERCEL AVANZADO
-            # ========================================================
             {
                 "type": "function",
                 "function": {
                     "name": "vercel_project_info",
-                    "description": "Obtiene info de un proyecto Vercel: ID, framework, última deploy, URL.",
+                    "description": "Info de un proyecto Vercel.",
                     "parameters": {
                         "type": "object",
                         "properties": {"project": {"type": "string"}},
@@ -1020,7 +1081,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "vercel_list_envs",
-                    "description": "Lista las variables de entorno de un proyecto Vercel.",
+                    "description": "Lista envs de un proyecto.",
                     "parameters": {
                         "type": "object",
                         "properties": {"project": {"type": "string"}},
@@ -1032,14 +1093,17 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "vercel_set_env",
-                    "description": "Crea o actualiza una variable de entorno en Vercel.",
+                    "description": "Crea/actualiza env en Vercel.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "project": {"type": "string"},
                             "key": {"type": "string"},
                             "value": {"type": "string"},
-                            "target": {"type": "array", "items": {"type": "string"}, "description": "production, preview, development"},
+                            "target": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
                         },
                         "required": ["project", "key", "value"],
                     },
@@ -1048,23 +1112,14 @@ class Agent:
             {
                 "type": "function",
                 "function": {
-                    "name": "vercel_delete_env",
-                    "description": "Elimina una variable de entorno de un proyecto Vercel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"project": {"type": "string"}, "env_id": {"type": "string"}},
-                        "required": ["project", "env_id"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
                     "name": "vercel_redeploy",
-                    "description": "Fuerza un nuevo deployment de un proyecto Vercel.",
+                    "description": "Redeploy de un proyecto Vercel.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"project": {"type": "string"}, "target": {"type": "string", "default": "production"}},
+                        "properties": {
+                            "project": {"type": "string"},
+                            "target": {"type": "string", "default": "production"},
+                        },
                         "required": ["project"],
                     },
                 },
@@ -1073,119 +1128,27 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "vercel_build_logs",
-                    "description": "Obtiene los logs del último deployment de un proyecto.",
+                    "description": "Logs del último deployment.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"project": {"type": "string"}, "limit": {"type": "integer", "default": 100}},
+                        "properties": {
+                            "project": {"type": "string"},
+                            "limit": {"type": "integer", "default": 100},
+                        },
                         "required": ["project"],
                     },
                 },
             },
+            # ------------------------- IMAGEN -------------------------
             {
                 "type": "function",
                 "function": {
-                    "name": "vercel_list_deployments",
-                    "description": "Lista todos los deployments de un proyecto Vercel.",
+                    "name": "generate_image",
+                    "description": "Genera una imagen con FLUX desde un prompt.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"project": {"type": "string"}, "limit": {"type": "integer", "default": 20}},
-                        "required": ["project"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_get_deployment",
-                    "description": "Obtiene los detalles de un deployment específico.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"deployment_id": {"type": "string"}},
-                        "required": ["deployment_id"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_cancel_deployment",
-                    "description": "Cancela un deployment en curso.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"deployment_id": {"type": "string"}},
-                        "required": ["deployment_id"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_list_domains",
-                    "description": "Lista los dominios asociados a un proyecto Vercel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"project": {"type": "string"}},
-                        "required": ["project"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_add_domain",
-                    "description": "Añade un dominio personalizado a un proyecto Vercel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"project": {"type": "string"}, "domain": {"type": "string"}},
-                        "required": ["project", "domain"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_remove_domain",
-                    "description": "Elimina un dominio de un proyecto Vercel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"project": {"type": "string"}, "domain": {"type": "string"}},
-                        "required": ["project", "domain"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_list_aliases",
-                    "description": "Lista los alias de un proyecto Vercel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"project": {"type": "string"}},
-                        "required": ["project"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_delete_project",
-                    "description": "Elimina un proyecto de Vercel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"project": {"type": "string"}},
-                        "required": ["project"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_create_project",
-                    "description": "Crea un nuevo proyecto en Vercel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"name": {"type": "string"}, "framework": {"type": "string", "default": "nextjs"}},
-                        "required": ["name"],
+                        "properties": {"prompt": {"type": "string"}},
+                        "required": ["prompt"],
                     },
                 },
             },
@@ -1195,7 +1158,11 @@ class Agent:
     # EJECUCIÓN DE HERRAMIENTAS
     # ==================================================================
 
-    async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def run_tool(
+        self,
+        name: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
         try:
             # --- BÚSQUEDA WEB ---
             if name == "web_search":
@@ -1276,7 +1243,7 @@ class Agent:
                 max_rows = args.get("max_rows")
                 return {"rows": self.files.read_csv(args["path"], int(max_rows) if max_rows else None)}
 
-            # --- GITHUB BÁSICO ---
+            # --- GITHUB ---
             if name == "github_list":
                 return await self.github_request("GET", "/user/repos?per_page=100")
             if name == "github_read":
@@ -1285,79 +1252,31 @@ class Agent:
                 return await self.github_request("GET", f"/repos/{repo}/contents/{path}")
             if name == "github_write":
                 return await self.github_write(args)
-
-            # --- GITHUB AVANZADO ---
             if name == "github_upload_file":
                 return await self.github_upload_file(args)
             if name == "github_upload_project":
                 return await self.github_upload_project(args)
             if name == "github_create_repo":
                 return await self.github_create_repo(args)
-            if name == "github_create_issue":
-                return await self.github_create_issue(args)
-            if name == "github_list_issues":
-                return await self.github_list_issues(args)
-            if name == "github_create_pr":
-                return await self.github_create_pr(args)
-            if name == "github_list_prs":
-                return await self.github_list_prs(args)
-            if name == "github_merge_pr":
-                return await self.github_merge_pr(args)
-            if name == "github_list_branches":
-                return await self.github_list_branches(args)
-            if name == "github_delete_branch":
-                return await self.github_delete_branch(args)
-            if name == "github_get_commit":
-                return await self.github_get_commit(args)
-            if name == "github_list_commits":
-                return await self.github_list_commits(args)
-            if name == "github_get_file":
-                return await self.github_get_file(args)
-            if name == "github_update_file":
-                return await self.github_update_file(args)
-            if name == "github_delete_file":
-                return await self.github_delete_file(args)
 
-            # --- VERCEL BÁSICO ---
+            # --- VERCEL ---
             if name == "vercel_projects":
                 return await self.vercel_request("GET", "/v9/projects?limit=100")
             if name == "vercel_deployments":
                 project = aiohttp.helpers.quote(args["project"], safe="")
                 return await self.vercel_request("GET", f"/v6/deployments?projectId={project}&limit=20")
-
-            # --- VERCEL AVANZADO ---
             if name == "vercel_project_info":
                 return await self.vercel_project_info(args)
             if name == "vercel_list_envs":
                 return await self.vercel_list_envs(args)
             if name == "vercel_set_env":
                 return await self.vercel_set_env(args)
-            if name == "vercel_delete_env":
-                return await self.vercel_delete_env(args)
             if name == "vercel_redeploy":
                 return await self.vercel_redeploy(args)
             if name == "vercel_build_logs":
                 return await self.vercel_build_logs(args)
-            if name == "vercel_list_deployments":
-                return await self.vercel_list_deployments(args)
-            if name == "vercel_get_deployment":
-                return await self.vercel_get_deployment(args)
-            if name == "vercel_cancel_deployment":
-                return await self.vercel_cancel_deployment(args)
-            if name == "vercel_list_domains":
-                return await self.vercel_list_domains(args)
-            if name == "vercel_add_domain":
-                return await self.vercel_add_domain(args)
-            if name == "vercel_remove_domain":
-                return await self.vercel_remove_domain(args)
-            if name == "vercel_list_aliases":
-                return await self.vercel_list_aliases(args)
-            if name == "vercel_delete_project":
-                return await self.vercel_delete_project(args)
-            if name == "vercel_create_project":
-                return await self.vercel_create_project(args)
 
-            # --- GENERACIÓN DE IMAGEN ---
+            # --- IMAGEN ---
             if name == "generate_image":
                 return await self.generate_image(args["prompt"])
 
@@ -1397,10 +1316,15 @@ class Agent:
         return result
 
     # ==================================================================
-    # GITHUB BÁSICO (ya existía)
+    # GITHUB
     # ==================================================================
 
-    async def github_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    async def github_request(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         if not config.github_token:
             return {"error": "GITHUB_TOKEN no está configurado."}
         headers = {
@@ -1410,7 +1334,9 @@ class Agent:
         }
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.request(method, "https://api.github.com" + path, headers=headers, **kwargs) as response:
+            async with session.request(
+                method, "https://api.github.com" + path, headers=headers, **kwargs
+            ) as response:
                 text = await response.text()
                 if response.status >= 400:
                     return {"error": f"GitHub HTTP {response.status}", "detail": text[:3000]}
@@ -1449,10 +1375,6 @@ class Agent:
                 if response.status >= 400:
                     return {"error": f"GitHub HTTP {response.status}", "detail": data}
                 return data
-
-    # ==================================================================
-    # GITHUB AVANZADO
-    # ==================================================================
 
     async def github_upload_file(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.github_token:
@@ -1556,7 +1478,12 @@ class Agent:
     async def github_create_repo(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.github_token:
             return {"error": "GITHUB_TOKEN no configurado."}
-        payload = {"name": args["name"], "description": args.get("description", ""), "private": bool(args.get("private", False)), "auto_init": True}
+        payload = {
+            "name": args["name"],
+            "description": args.get("description", ""),
+            "private": bool(args.get("private", False)),
+            "auto_init": True,
+        }
         headers = {
             "Authorization": f"Bearer {config.github_token}",
             "Accept": "application/vnd.github+json",
@@ -1570,99 +1497,8 @@ class Agent:
                     return {"error": f"HTTP {resp.status}", "detail": data}
                 return {"name": data.get("full_name"), "url": data.get("html_url"), "clone_url": data.get("clone_url")}
 
-    async def github_create_issue(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        payload = {"title": args["title"], "body": args.get("body", "")}
-        if args.get("labels"):
-            payload["labels"] = args["labels"]
-        return await self.github_request("POST", f"/repos/{repo}/issues", json=payload)
-
-    async def github_list_issues(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        state = args.get("state", "open")
-        return await self.github_request("GET", f"/repos/{repo}/issues?state={state}&per_page=100")
-
-    async def github_create_pr(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        payload = {"title": args["title"], "head": args["head"], "base": args.get("base", "main"), "body": args.get("body", "")}
-        return await self.github_request("POST", f"/repos/{repo}/pulls", json=payload)
-
-    async def github_list_prs(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        state = args.get("state", "open")
-        return await self.github_request("GET", f"/repos/{repo}/pulls?state={state}&per_page=100")
-
-    async def github_merge_pr(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        pr_number = args["pr_number"]
-        payload = {"merge_method": args.get("merge_method", "merge")}
-        return await self.github_request("PUT", f"/repos/{repo}/pulls/{pr_number}/merge", json=payload)
-
-    async def github_list_branches(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        return await self.github_request("GET", f"/repos/{repo}/branches?per_page=100")
-
-    async def github_delete_branch(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        branch = args["branch"]
-        return await self.github_request("DELETE", f"/repos/{repo}/git/refs/heads/{branch}")
-
-    async def github_get_commit(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        sha = args["sha"]
-        return await self.github_request("GET", f"/repos/{repo}/commits/{sha}")
-
-    async def github_list_commits(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        branch = args.get("branch", "main")
-        per_page = int(args.get("per_page", 10))
-        return await self.github_request("GET", f"/repos/{repo}/commits?sha={branch}&per_page={per_page}")
-
-    async def github_get_file(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        path = args["path"].lstrip("/")
-        ref = args.get("ref", "main")
-        return await self.github_request("GET", f"/repos/{repo}/contents/{path}?ref={ref}")
-
-    async def github_update_file(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        path = args["path"].lstrip("/")
-        content = base64.b64encode(args["content"].encode("utf-8")).decode("ascii")
-        payload = {"message": args["message"], "content": content, "sha": args["sha"]}
-        return await self.github_request("PUT", f"/repos/{repo}/contents/{path}", json=payload)
-
-    async def github_delete_file(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.github_token:
-            return {"error": "GITHUB_TOKEN no configurado."}
-        repo = args["repo"].strip("/")
-        path = args["path"].lstrip("/")
-        payload = {"message": args["message"], "sha": args["sha"]}
-        return await self.github_request("DELETE", f"/repos/{repo}/contents/{path}", json=payload)
-
     # ==================================================================
-    # VERCEL BÁSICO (ya existía)
+    # VERCEL
     # ==================================================================
 
     async def vercel_request(self, method: str, path: str) -> dict[str, Any]:
@@ -1676,10 +1512,6 @@ class Agent:
                 if response.status >= 400:
                     return {"error": f"Vercel HTTP {response.status}", "detail": data}
                 return data
-
-    # ==================================================================
-    # VERCEL AVANZADO
-    # ==================================================================
 
     async def _vercel_project_id(self, project: str) -> str | None:
         if project.startswith("prj_"):
@@ -1699,8 +1531,6 @@ class Agent:
             "name": data.get("name"),
             "framework": data.get("framework"),
             "url": f"https://{data.get('name')}.vercel.app" if data.get("name") else None,
-            "created": data.get("createdAt"),
-            "updated": data.get("updatedAt"),
         }
 
     async def vercel_list_envs(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1714,7 +1544,10 @@ class Agent:
         envs = data.get("envs", [])
         return {
             "count": len(envs),
-            "envs": [{"key": e.get("key"), "target": e.get("target"), "type": e.get("type"), "id": e.get("id")} for e in envs],
+            "envs": [
+                {"key": e.get("key"), "target": e.get("target"), "type": e.get("type"), "id": e.get("id")}
+                for e in envs
+            ],
         }
 
     async def vercel_set_env(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1741,29 +1574,26 @@ class Agent:
                         if e.get("key") == key:
                             existing_id = e.get("id")
                             break
-            payload = {"key": key, "value": value, "target": target, "type": "encrypted"}
             if existing_id:
-                async with session.patch(f"https://api.vercel.com/v9/projects/{pid}/env/{existing_id}", headers=headers, json={"value": value, "target": target}) as resp:
+                async with session.patch(
+                    f"https://api.vercel.com/v9/projects/{pid}/env/{existing_id}",
+                    headers=headers,
+                    json={"value": value, "target": target},
+                ) as resp:
                     data = await resp.json(content_type=None)
                     if resp.status >= 400:
                         return {"error": f"HTTP {resp.status}", "detail": data}
                     return {"action": "updated", "key": key, "target": target}
             else:
-                async with session.post(f"https://api.vercel.com/v10/projects/{pid}/env", headers=headers, json=payload) as resp:
+                async with session.post(
+                    f"https://api.vercel.com/v10/projects/{pid}/env",
+                    headers=headers,
+                    json={"key": key, "value": value, "target": target, "type": "encrypted"},
+                ) as resp:
                     data = await resp.json(content_type=None)
                     if resp.status >= 400:
                         return {"error": f"HTTP {resp.status}", "detail": data}
                     return {"action": "created", "key": key, "target": target}
-
-    async def vercel_delete_env(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.vercel_token:
-            return {"error": "VERCEL_TOKEN no configurado."}
-        project = args["project"]
-        env_id = args["env_id"]
-        pid = await self._vercel_project_id(project)
-        if not pid:
-            return {"error": f"Proyecto '{project}' no encontrado."}
-        return await self.vercel_request("DELETE", f"/v9/projects/{pid}/env/{env_id}")
 
     async def vercel_redeploy(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.vercel_token:
@@ -1777,14 +1607,17 @@ class Agent:
             "Authorization": f"Bearer {config.vercel_token}",
             "Content-Type": "application/json",
         }
-        payload = {"name": project, "project": pid, "target": target}
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post("https://api.vercel.com/v13/deployments", headers=headers, json=payload) as resp:
+            async with session.post(
+                "https://api.vercel.com/v13/deployments",
+                headers=headers,
+                json={"name": project, "project": pid, "target": target},
+            ) as resp:
                 data = await resp.json(content_type=None)
                 if resp.status >= 400:
                     return {"error": f"HTTP {resp.status}", "detail": data}
-                return {"id": data.get("id"), "url": data.get("url"), "status": data.get("status"), "target": target}
+                return {"id": data.get("id"), "url": data.get("url"), "status": data.get("status")}
 
     async def vercel_build_logs(self, args: dict[str, Any]) -> dict[str, Any]:
         project = args["project"]
@@ -1809,79 +1642,6 @@ class Agent:
                     lines.append(text)
         return {"deployment": deploy_id, "state": deploy.get("state"), "url": deploy.get("url"), "logs": lines[-limit:], "log_count": len(lines)}
 
-    async def vercel_list_deployments(self, args: dict[str, Any]) -> dict[str, Any]:
-        project = args["project"]
-        limit = int(args.get("limit", 20))
-        pid = await self._vercel_project_id(project)
-        if not pid:
-            return {"error": f"Proyecto '{project}' no encontrado."}
-        data = await self.vercel_request("GET", f"/v6/deployments?projectId={pid}&limit={limit}")
-        deployments = data.get("deployments", []) if isinstance(data, dict) else []
-        return {"deployments": [{"id": d.get("uid") or d.get("id"), "url": d.get("url"), "state": d.get("state"), "created": d.get("created")} for d in deployments]}
-
-    async def vercel_get_deployment(self, args: dict[str, Any]) -> dict[str, Any]:
-        deployment_id = args["deployment_id"]
-        return await self.vercel_request("GET", f"/v13/deployments/{deployment_id}")
-
-    async def vercel_cancel_deployment(self, args: dict[str, Any]) -> dict[str, Any]:
-        deployment_id = args["deployment_id"]
-        return await self.vercel_request("PATCH", f"/v12/deployments/{deployment_id}/cancel")
-
-    async def vercel_list_domains(self, args: dict[str, Any]) -> dict[str, Any]:
-        project = args["project"]
-        pid = await self._vercel_project_id(project)
-        if not pid:
-            return {"error": f"Proyecto '{project}' no encontrado."}
-        return await self.vercel_request("GET", f"/v9/projects/{pid}/domains")
-
-    async def vercel_add_domain(self, args: dict[str, Any]) -> dict[str, Any]:
-        project = args["project"]
-        domain = args["domain"]
-        pid = await self._vercel_project_id(project)
-        if not pid:
-            return {"error": f"Proyecto '{project}' no encontrado."}
-        return await self.vercel_request("POST", f"/v10/projects/{pid}/domains", json={"name": domain})
-
-    async def vercel_remove_domain(self, args: dict[str, Any]) -> dict[str, Any]:
-        project = args["project"]
-        domain = args["domain"]
-        pid = await self._vercel_project_id(project)
-        if not pid:
-            return {"error": f"Proyecto '{project}' no encontrado."}
-        return await self.vercel_request("DELETE", f"/v9/projects/{pid}/domains/{domain}")
-
-    async def vercel_list_aliases(self, args: dict[str, Any]) -> dict[str, Any]:
-        project = args["project"]
-        pid = await self._vercel_project_id(project)
-        if not pid:
-            return {"error": f"Proyecto '{project}' no encontrado."}
-        return await self.vercel_request("GET", f"/v4/aliases?projectId={pid}")
-
-    async def vercel_delete_project(self, args: dict[str, Any]) -> dict[str, Any]:
-        project = args["project"]
-        pid = await self._vercel_project_id(project)
-        if not pid:
-            return {"error": f"Proyecto '{project}' no encontrado."}
-        return await self.vercel_request("DELETE", f"/v9/projects/{pid}")
-
-    async def vercel_create_project(self, args: dict[str, Any]) -> dict[str, Any]:
-        if not config.vercel_token:
-            return {"error": "VERCEL_TOKEN no configurado."}
-        name = args["name"]
-        framework = args.get("framework", "nextjs")
-        headers = {
-            "Authorization": f"Bearer {config.vercel_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {"name": name, "framework": framework}
-        timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post("https://api.vercel.com/v11/projects", headers=headers, json=payload) as resp:
-                data = await resp.json(content_type=None)
-                if resp.status >= 400:
-                    return {"error": f"HTTP {resp.status}", "detail": data}
-                return {"id": data.get("id"), "name": data.get("name"), "url": f"https://{data.get('name')}.vercel.app"}
-
     # ==================================================================
     # GENERACIÓN DE IMAGEN (FLUX)
     # ==================================================================
@@ -1896,10 +1656,18 @@ class Agent:
         self._flux_keys.rotate(-1)
         base = config.flux_base_url.rstrip("/")
         model = config.flux_endpoint
-        headers = {"accept": "application/json", "x-key": key, "Content-Type": "application/json"}
+        headers = {
+            "accept": "application/json",
+            "x-key": key,
+            "Content-Type": "application/json",
+        }
         timeout = aiohttp.ClientTimeout(total=120)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(f"{base}/{model}", headers=headers, json={"prompt": prompt, "width": 1024, "height": 1024, "output_format": "png"}) as response:
+            async with session.post(
+                f"{base}/{model}",
+                headers=headers,
+                json={"prompt": prompt, "width": 1024, "height": 1024, "output_format": "png"},
+            ) as response:
                 data = await response.json(content_type=None)
                 if response.status >= 400:
                     return {"error": f"FLUX HTTP {response.status}", "detail": data}
@@ -1918,7 +1686,11 @@ class Agent:
                         if not sample:
                             return {"result": result}
                         local_path = await self._download_flux_image(sample, prompt)
-                        return {"image_url": sample, "local_path": local_path, "note": "Imagen guardada localmente. Usa github_upload_file con este local_path para subirla."}
+                        return {
+                            "image_url": sample,
+                            "local_path": local_path,
+                            "note": "Imagen guardada localmente. Usa github_upload_file con este local_path para subirla.",
+                        }
                     if status in {"error", "failed", "request moderated", "content moderated"}:
                         return {"error": f"FLUX falló: {status}", "detail": result}
             return {"error": "FLUX tardó demasiado"}
@@ -1948,7 +1720,14 @@ class Agent:
     # CHAT / TOOL LOOP
     # ==================================================================
 
-    async def ask(self, user_id: int, channel_id: int, prompt: str, force_image: bool = False) -> tuple[str, str | None]:
+    async def ask(
+        self,
+        user_id: int,
+        channel_id: int,
+        prompt: str,
+        force_image: bool = False,
+    ) -> tuple[str, str | None]:
+
         task = motor.classify(prompt)
         lang = motor.lang(prompt)
         print(f"[MOTOR] tarea={task.value} lang={lang.value}")
@@ -1965,7 +1744,14 @@ class Agent:
                 messages[-1] = {"role": "user", "content": multimodal}
 
         if force_image:
-            messages.append({"role": "user", "content": "Genera una imagen usando la herramienta generate_image para esta petición:\n\n" + prompt})
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Genera una imagen usando la "
+                    "herramienta generate_image "
+                    "para esta petición:\n\n" + prompt
+                ),
+            })
 
         image_url: str | None = None
         modelos = self._select_model(prompt, task, force_image)
@@ -1975,19 +1761,31 @@ class Agent:
             t0 = asyncio.get_event_loop().time()
             try:
                 for _ in range(config.ai_max_tool_rounds):
-                    response = await connector.complete(messages, self.tool_schemas(), model=modelo_actual)
+                    response = await connector.complete(
+                        messages,
+                        self.tool_schemas(),
+                        model=modelo_actual,
+                    )
+
                     choices = response.get("choices") or []
                     if not choices:
                         raise RuntimeError("La IA no devolvió ninguna elección.")
+
                     message = choices[0].get("message") or {}
                     tool_calls = message.get("tool_calls") or []
-                    assistant_message = {"role": "assistant", "content": message.get("content") or ""}
+
+                    assistant_message: dict[str, Any] = {
+                        "role": "assistant",
+                        "content": message.get("content") or "",
+                    }
                     if tool_calls:
                         assistant_message["tool_calls"] = tool_calls
                     messages.append(assistant_message)
 
                     if not tool_calls:
-                        answer = (message.get("content") or "").strip() or "No he recibido una respuesta de texto del modelo."
+                        answer = (message.get("content") or "").strip()
+                        if not answer:
+                            answer = "No he recibido una respuesta de texto del modelo."
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
                         motor.record(model=modelo_actual, task=task, lang=lang, latency=dt, error=False)
@@ -2011,20 +1809,56 @@ class Agent:
                         result = await self.run_tool(name, args)
                         if isinstance(result, dict) and result.get("image_url"):
                             image_url = result["image_url"]
-                        messages.append({"role": "tool", "tool_call_id": call.get("id") or "", "content": connector.clean_tool_result(result)})
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call.get("id") or "",
+                            "content": connector.clean_tool_result(result),
+                        })
+
                 raise RuntimeError("La IA agotó el número máximo de rondas de herramientas.")
+
             except Exception as exc:
                 last_error = exc
                 dt = asyncio.get_event_loop().time() - t0
-                motor.record(model=modelo_actual, task=task, lang=lang, latency=dt, error=True, error_msg=str(exc)[:200])
+                motor.record(
+                    model=modelo_actual,
+                    task=task,
+                    lang=lang,
+                    latency=dt,
+                    error=True,
+                    error_msg=str(exc)[:200],
+                )
+
                 err_txt = str(exc).lower()
-                if "image" in err_txt or "vision" in err_txt or "multimodal" in err_txt or "modality" in err_txt:
-                    print(f"[VISION] Modelo '{modelo_actual}' rechazó la imagen. Probando siguiente.")
+
+                if (
+                    "image" in err_txt
+                    or "vision" in err_txt
+                    or "multimodal" in err_txt
+                    or "modality" in err_txt
+                ):
+                    print(
+                        f"[VISION] Modelo '{modelo_actual}' "
+                        f"rechazó la imagen. Probando siguiente."
+                    )
+                elif "404" in err_txt or "unavailable" in err_txt:
+                    print(
+                        f"[MODEL-GONE] '{modelo_actual}' ya no existe. "
+                        f"Siguiente."
+                    )
                 else:
-                    print(f"[FALLBACK] Modelo '{modelo_actual}' falló: {type(exc).__name__}: {str(exc)[:200]}")
+                    print(
+                        f"[FALLBACK] Modelo '{modelo_actual}' "
+                        f"falló: {type(exc).__name__}: "
+                        f"{str(exc)[:200]}"
+                    )
+
                 continue
 
-        raise RuntimeError("Todos los modelos gratuitos fallaron. Último error: " + str(last_error))
+        raise RuntimeError(
+            "Todos los modelos gratuitos fallaron. "
+            f"Último error: {last_error}"
+        )
 
 
 # Instancia global.
