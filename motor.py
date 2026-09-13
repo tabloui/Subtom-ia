@@ -15,20 +15,16 @@ import aiohttp
 from config import config
 
 
-# ============================================================
-# TIPOS DE TAREA
-# ============================================================
-
 class TaskType(str, Enum):
-    IMAGE_READ = "image_read"   # el usuario subió una imagen
-    IMAGE_GEN  = "image_gen"    # el usuario pide generar imagen
-    CODE       = "code"         # programar / debug
-    SEARCH     = "search"       # buscar en internet
-    FETCH      = "fetch"        # leer una URL
-    FILE       = "file"         # tocar archivos
-    PDF        = "pdf"          # leer PDF
-    DATA       = "data"         # csv / json / yaml
-    CHAT       = "chat"         # conversación normal
+    IMAGE_READ = "image_read"
+    IMAGE_GEN  = "image_gen"
+    CODE       = "code"
+    SEARCH     = "search"
+    FETCH      = "fetch"
+    FILE       = "file"
+    PDF        = "pdf"
+    DATA       = "data"
+    CHAT       = "chat"
 
 
 class PromptLang(str, Enum):
@@ -37,24 +33,13 @@ class PromptLang(str, Enum):
     UNKNOWN = "?"
 
 
-# ============================================================
-# CLASIFICADOR CON PATRONES DE CONVERSACIÓN NATURAL
-# ============================================================
-
-_RE_IMAGE_PATH = re.compile(
-    r"->\s*ruta local:\s*(\S+)", re.IGNORECASE
-)
-
+_RE_IMAGE_PATH = re.compile(r"->\s*ruta local:\s*(\S+)", re.IGNORECASE)
 _RE_PDF_PATH = re.compile(r"\.pdf\b", re.IGNORECASE)
 _RE_DATA_PATH = re.compile(r"\.(csv|json|yaml|yml|tsv)\b", re.IGNORECASE)
 _RE_CODE_PATH = re.compile(
     r"\.(py|js|ts|tsx|jsx|java|rs|go|rb|php|c|cpp|h|hpp|cs|kt|swift)\b",
     re.IGNORECASE,
 )
-
-# ------------------------------------------------------------
-# GENERACIÓN DE IMAGEN (frase larga)
-# ------------------------------------------------------------
 
 _RE_IMAGE_GEN = re.compile(
     r"\b(genera|generar|generame|genérame|dibuja|dibujame|"
@@ -72,19 +57,11 @@ _RE_IMAGE_GEN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# ------------------------------------------------------------
-# GENERACIÓN DE IMAGEN (frase corta: "genera un gato")
-# ------------------------------------------------------------
-
 _RE_IMAGE_GEN_SHORT = re.compile(
     r"^\s*(genera|dibuja|pinta|crea|hazme|haz|ilustra|"
     r"dis[eé]?[ñn]a|renderiza|muestrame|mu[eé]strame)\b",
     re.IGNORECASE,
 )
-
-# ------------------------------------------------------------
-# BÚSQUEDA FUERTE
-# ------------------------------------------------------------
 
 _RE_SEARCH_STRONG = re.compile(
     r"\b(busca en (google|internet|la web|online|el navegador)|"
@@ -120,10 +97,6 @@ _RE_SEARCH_WEAK = re.compile(
     re.IGNORECASE,
 )
 
-# ------------------------------------------------------------
-# CÓDIGO
-# ------------------------------------------------------------
-
 _RE_CODE = re.compile(
     r"\b(c[oó]digo|code|c[oó]digo fuente|programa|programar|"
     r"script|funci[oó]n|function|m[eé]todo|method|clase|class|"
@@ -151,10 +124,6 @@ _RE_CODE = re.compile(
     r"regex|regexp|expresi[oó]n regular)\b",
     re.IGNORECASE,
 )
-
-# ------------------------------------------------------------
-# ARCHIVOS
-# ------------------------------------------------------------
 
 _RE_FILE_HINT = re.compile(
     r"\b(archivo|archivos|fichero|ficheros|carpeta|carpetas|"
@@ -186,15 +155,7 @@ _RE_FILE_ACTION = re.compile(
     re.IGNORECASE,
 )
 
-# ------------------------------------------------------------
-# URLs
-# ------------------------------------------------------------
-
 _RE_URL = re.compile(r"https?://[^\s,;)\]\}<>\"']+")
-
-# ------------------------------------------------------------
-# IDIOMA
-# ------------------------------------------------------------
 
 _RE_ES = re.compile(
     r"\b(el|la|los|las|un|una|unos|unas|de|del|al|"
@@ -221,10 +182,8 @@ _RE_EN = re.compile(
 def detect_lang(prompt: str) -> PromptLang:
     if not prompt:
         return PromptLang.UNKNOWN
-
     es = len(_RE_ES.findall(prompt))
     en = len(_RE_EN.findall(prompt))
-
     if es > en:
         return PromptLang.ES
     if en > es:
@@ -232,80 +191,35 @@ def detect_lang(prompt: str) -> PromptLang:
     return PromptLang.UNKNOWN
 
 
-# ============================================================
-# CLASIFICADOR PRINCIPAL
-# ============================================================
-
 def classify(prompt: str) -> TaskType:
-    """
-    Clasifica en <1ms.
-    Prioridad:
-      1) Adjunto imagen ya descargado (ruta local)
-      2) Generación de imagen (frase larga o corta)
-      3) URL directa (fetch)
-      4) PDF / CSV / DATA
-      5) Ruta de archivo de código (.py, .js, etc.)
-      6) Código
-      7) Búsqueda fuerte (noticias, precios, clima, fechas)
-      8) Acción explícita de archivos
-      9) Búsqueda débil
-     10) Chat
-    """
     if not prompt:
         return TaskType.CHAT
-
-    # 1) Imagen adjunta
     if _RE_IMAGE_PATH.search(prompt):
         return TaskType.IMAGE_READ
-
-    # 2) Generación de imagen (frase larga)
     if _RE_IMAGE_GEN.search(prompt):
         return TaskType.IMAGE_GEN
-
-    # 2b) Generación de imagen (frase corta)
     if _RE_IMAGE_GEN_SHORT.search(prompt):
         return TaskType.IMAGE_GEN
-
-    # 3) URL directa
     if _RE_URL.search(prompt):
         return TaskType.FETCH
-
-    # 4) PDF / DATA
     if _RE_PDF_PATH.search(prompt):
         return TaskType.PDF
     if _RE_DATA_PATH.search(prompt):
         return TaskType.DATA
-
-    # 5) Ruta de archivo de código sin contexto de código
     if _RE_CODE_PATH.search(prompt) and not _RE_CODE.search(prompt):
         return TaskType.FILE
-
-    # 6) Código
     if _RE_CODE.search(prompt):
         return TaskType.CODE
-
-    # 7) Búsqueda fuerte
     if _RE_SEARCH_STRONG.search(prompt):
         return TaskType.SEARCH
-
-    # 8) Archivo (pista + acción)
     if _RE_FILE_HINT.search(prompt) or _RE_FILE_ACTION.search(prompt):
         return TaskType.FILE
-
-    # 9) Búsqueda débil
     if _RE_SEARCH_WEAK.search(prompt):
         return TaskType.SEARCH
-
     return TaskType.CHAT
 
 
-# ============================================================
-# SENSORES (ventana deslizante)
-# ============================================================
-
 class SlidingWindow:
-    """Ventana de latencias con percentiles."""
-
     def __init__(self, size: int = 50) -> None:
         self.size = size
         self._samples: deque[float] = deque(maxlen=size)
@@ -331,7 +245,6 @@ class SlidingWindow:
 
 @dataclass
 class SensorStats:
-    """Estadísticas con ventana temporal y percentiles."""
     calls: int = 0
     errors: int = 0
     total_latency: float = 0.0
@@ -361,7 +274,6 @@ class SensorStats:
         self.calls += 1
         self.total_latency += latency
         self.window.add(latency)
-
         if error:
             self.errors += 1
             self.consecutive_errors += 1
@@ -383,8 +295,6 @@ class SensorStats:
 
 
 class Metrics:
-    """Sensores por modelo, key, tarea e idioma."""
-
     def __init__(self) -> None:
         self.per_model: dict[str, SensorStats] = {}
         self.per_key: dict[int, SensorStats] = {}
@@ -416,13 +326,10 @@ class Metrics:
             s.observe(latency, error)
             if error and error_msg:
                 s.last_error = error_msg[:200]
-
         if key_index is not None:
             self._get(self.per_key, key_index).observe(latency, error)
-
         if task is not None:
             self._get(self.per_task, task.value).observe(latency, error)
-
         if lang is not None:
             self._get(self.per_lang, lang.value).observe(latency, error)
 
@@ -441,6 +348,7 @@ class Metrics:
 
         return {
             "uptime_s": round(time.time() - self.t_start, 1),
+            "provider": "groq",
             "models": dump(self.per_model),
             "keys": dump(self.per_key),
             "tasks": dump(self.per_task),
@@ -449,21 +357,8 @@ class Metrics:
         }
 
 
-# ============================================================
-# CIRCUIT BREAKER
-# ============================================================
-
 class CircuitBreaker:
-    """
-    Corta un recurso (modelo, clave) si falla N veces seguidas.
-    Lo reintenta tras `cooldown` segundos.
-    """
-
-    def __init__(
-        self,
-        threshold: int = 3,
-        cooldown: float = 60.0,
-    ) -> None:
+    def __init__(self, threshold: int = 3, cooldown: float = 60.0) -> None:
         self.threshold = threshold
         self.cooldown = cooldown
         self._open_until: dict[str, float] = {}
@@ -487,10 +382,6 @@ class CircuitBreaker:
         }
 
 
-# ============================================================
-# CACHE (LRU + TTL + blake2b)
-# ============================================================
-
 @dataclass
 class CacheEntry:
     value: Any
@@ -498,10 +389,6 @@ class CacheEntry:
 
 
 class ResultCache:
-    """
-    Cache LRU con TTL y contadores por prefijo.
-    """
-
     def __init__(self, max_size: int = 300, ttl: float = 300.0) -> None:
         self.max_size = max_size
         self.ttl = ttl
@@ -528,18 +415,15 @@ class ResultCache:
         k = self._key(prefix, args)
         entry = self._data.get(k)
         stats = self._stats_for(prefix)
-
         if entry is None:
             self.misses += 1
             stats["misses"] += 1
             return None
-
         if entry.expires_at < time.time():
             self._data.pop(k, None)
             self.misses += 1
             stats["misses"] += 1
             return None
-
         self._data.move_to_end(k)
         self.hits += 1
         stats["hits"] += 1
@@ -560,7 +444,6 @@ class ResultCache:
             n = len(self._data)
             self._data.clear()
             return n
-
         to_del = [k for k in self._data if k.startswith(prefix)]
         for k in to_del:
             self._data.pop(k, None)
@@ -575,120 +458,8 @@ class ResultCache:
         }
 
 
-# ============================================================
-# KEY POOL
-# ============================================================
-
-class KeyPool:
-    """
-    Gestiona claves de OpenRouter.
-    - Rotación con cursor.
-    - Circuit breaker por clave.
-    - `race()` lanza N claves en paralelo.
-    """
-
-    def __init__(
-        self,
-        keys: list[str],
-        metrics: Metrics,
-        breaker: CircuitBreaker,
-    ) -> None:
-        self.keys = keys
-        self.metrics = metrics
-        self.breaker = breaker
-        self._cursor = 0
-
-    def available(self) -> list[tuple[int, str]]:
-        out: list[tuple[int, str]] = []
-        total = len(self.keys)
-        for offset in range(total):
-            idx = (self._cursor + offset) % total
-            if not self.breaker.is_open(f"key:{idx}"):
-                out.append((idx, self.keys[idx]))
-        return out
-
-    def mark_good(self, idx: int) -> None:
-        self._cursor = idx
-        self.breaker.reset(f"key:{idx}")
-
-    def mark_bad(self, idx: int, seconds: float = 60.0) -> None:
-        self.breaker.trip(f"key:{idx}", seconds)
-
-    async def race(
-        self,
-        worker: Callable[[int, str], Awaitable[Any]],
-        max_parallel: int = 3,
-    ) -> Any:
-        """
-        Lanza hasta `max_parallel` claves a la vez.
-        La primera que devuelva OK gana.
-        Cancela limpiamente las demás.
-        """
-        candidates = self.available()[:max_parallel]
-        if not candidates:
-            raise RuntimeError("Todas las claves están en cooldown.")
-
-        tasks = {
-            asyncio.create_task(worker(idx, key)): idx
-            for idx, key in candidates
-        }
-
-        winner_idx: int | None = None
-        result: Any = None
-        errors: list[Exception] = []
-
-        try:
-            pending = set(tasks.keys())
-
-            while pending:
-                done, pending = await asyncio.wait(
-                    pending,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                for task in done:
-                    exc = task.exception()
-                    if exc is None:
-                        winner_idx = tasks[task]
-                        result = task.result()
-                        pending = set()
-                        break
-                    else:
-                        errors.append(exc)
-
-            if winner_idx is None:
-                raise errors[-1] if errors else RuntimeError(
-                    "Todas las claves fallaron."
-                )
-
-            return result
-
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            if tasks:
-                await asyncio.gather(
-                    *tasks.keys(), return_exceptions=True
-                )
-
-
-# ============================================================
-# MODEL ROUTER
-# ============================================================
-
 class ModelRouter:
-    """
-    Ordena modelos por salud.
-    Modelos nuevos se exploran antes que los malos probados.
-    Modelos con circuit breaker abierto van al final.
-    """
-
-    def __init__(
-        self,
-        metrics: Metrics,
-        breaker: CircuitBreaker,
-    ) -> None:
+    def __init__(self, metrics: Metrics, breaker: CircuitBreaker) -> None:
         self.metrics = metrics
         self.breaker = breaker
 
@@ -700,64 +471,40 @@ class ModelRouter:
             if self.breaker.is_open(f"model:{m}"):
                 dead.append(m)
                 continue
-
             s = self.metrics.per_model.get(m)
-
             if s is None or s.calls < 2:
-                # Modelo nuevo → explorar (mejor que malo probado)
                 score = 0.30
             else:
                 ok_rate = s.success_rate
                 lat_score = 1.0 / (1.0 + s.p50 * 1000)
                 score = (1.0 - ok_rate) * 0.7 + (1.0 - lat_score) * 0.3
-
             alive.append((score, m))
 
         alive.sort(key=lambda x: x[0])
-
         return [m for _, m in alive] + dead
 
-    def pick(
-        self,
-        candidates: list[str],
-        top: int = 3,
-    ) -> list[str]:
+    def pick(self, candidates: list[str], top: int = 3) -> list[str]:
         return self.order(candidates)[:top]
 
-
-# ============================================================
-# MOTOR
-# ============================================================
 
 class Motor:
     def __init__(self) -> None:
         self.metrics = Metrics()
         self.cache = ResultCache(max_size=300, ttl=300.0)
         self.breaker = CircuitBreaker(threshold=3, cooldown=60.0)
-        self.keys = KeyPool(
-            config.openrouter_api_keys,
-            self.metrics,
-            self.breaker,
-        )
         self.router = ModelRouter(self.metrics, self.breaker)
         self._health_task: asyncio.Task | None = None
-
-    # --------- CLASIFICACIÓN ---------
 
     def classify(self, prompt: str) -> TaskType:
         t0 = time.perf_counter()
         task = classify(prompt)
         dt = (time.perf_counter() - t0) * 1000
-
         if dt > 1.0:
             print(f"[MOTOR] classify lento: {dt:.2f}ms")
-
         return task
 
     def lang(self, prompt: str) -> PromptLang:
         return detect_lang(prompt)
-
-    # --------- MODELOS ---------
 
     def pick_models(
         self,
@@ -783,8 +530,6 @@ class Motor:
     def mark_model_ok(self, model: str) -> None:
         self.breaker.reset(f"model:{model}")
 
-    # --------- CACHE ---------
-
     def cache_get_search(self, query: str) -> Any | None:
         return self.cache.get("search", query.lower().strip())
 
@@ -796,8 +541,6 @@ class Motor:
 
     def cache_set_fetch(self, url: str, value: Any) -> None:
         self.cache.set("fetch", value, url.strip())
-
-    # --------- MÉTRICAS ---------
 
     def record(
         self,
@@ -819,7 +562,6 @@ class Motor:
             error=error,
             error_msg=error_msg,
         )
-
         if model is not None:
             if error:
                 self.mark_model_error(model)
@@ -833,54 +575,53 @@ class Motor:
             **self.metrics.snapshot(),
         }
 
-    # --------- PREWARM ---------
-
     async def prewarm(self) -> None:
         timeout = aiohttp.ClientTimeout(total=10)
         results: dict[str, Any] = {}
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
 
-            async def ping(url: str) -> None:
+            async def ping(url: str, headers: dict | None = None) -> None:
                 try:
-                    async with session.get(url) as r:
+                    async with session.get(url, headers=headers or {}) as r:
                         await r.read()
                         results[url] = r.status
                 except Exception as exc:
                     results[url] = f"err:{type(exc).__name__}"
 
+            groq_headers = {
+                "Authorization": f"Bearer {config.groq_api_key}",
+            }
+
             await asyncio.gather(
-                ping("https://openrouter.ai/api/v1/models"),
+                ping(f"{config.groq_base_url}/models", groq_headers),
                 ping(config.flux_base_url.rstrip("/")),
                 ping("https://html.duckduckgo.com/html/"),
                 return_exceptions=True,
             )
 
-        print(f"[MOTOR] prewarm → {results}")
+        print(f"[MOTOR] prewarm (Groq) → {results}")
 
-    # --------- HEALTHCHECK ---------
-
-    async def healthcheck_loop(
-        self,
-        interval: float = 300.0,
-    ) -> None:
+    async def healthcheck_loop(self, interval: float = 300.0) -> None:
         while True:
             try:
                 await asyncio.sleep(interval)
+                headers = {
+                    "Authorization": f"Bearer {config.groq_api_key}",
+                }
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=15)
                 ) as s:
                     async with s.get(
-                        "https://openrouter.ai/api/v1/models"
+                        f"{config.groq_base_url}/models",
+                        headers=headers,
                     ) as r:
                         if r.status == 200:
-                            data = await r.json(
-                                content_type=None
-                            )
+                            data = await r.json(content_type=None)
                             alive = {
                                 m["id"]
                                 for m in (data.get("data") or [])
-                                if m["id"].endswith(":free")
+                                if m.get("id")
                             }
                             for m in list(self.breaker._open_until):
                                 if m.startswith("model:"):
@@ -888,8 +629,8 @@ class Motor:
                                     if mid in alive:
                                         self.breaker.reset(m)
                             print(
-                                f"[MOTOR] healthcheck ok, "
-                                f"{len(alive)} modelos :free"
+                                f"[MOTOR] healthcheck Groq ok, "
+                                f"{len(alive)} modelos disponibles"
                             )
             except asyncio.CancelledError:
                 raise
@@ -907,49 +648,24 @@ class Motor:
             self._health_task.cancel()
 
 
-# ============================================================
-# INSTANCIA GLOBAL
-# ============================================================
-
 motor = Motor()
 
-
-# ============================================================
-# TEST RÁPIDO (opcional)
-# ============================================================
 
 if __name__ == "__main__":
     tests = [
         "genera un gato volando en una moto",
         "dibújame un dragón rojo",
-        "quiero ver una imagen de una ciudad futurista",
-        "hazme un logo minimalista",
         "busca el precio del bitcoin",
         "quién ganó el último partido del Madrid",
-        "qué tiempo va a hacer mañana en Barcelona",
-        "cuándo sale la nueva película de Marvel",
         "arregla este bug en python",
-        "me da un error cuando ejecuto el script",
-        "optimiza esta función",
-        "refactoriza la clase User",
         "lee el archivo config.py",
-        "borra la carpeta temporal",
-        "comprime todo en un zip",
         "grep la palabra TODO en mis archivos",
-        "lista los archivos del workspace",
-        "reemplaza old por new en el archivo",
         "https://github.com/user/repo",
         "resume el pdf adjunto",
-        "analiza este csv",
         "hola qué tal",
-        "gracias por la ayuda",
         "explícame cómo funciona asyncio",
-        "cuál es mejor python o rust",
     ]
-
     print("=" * 60)
     for t in tests:
-        task = classify(t)
-        lang = detect_lang(t)
-        print(f"{task.value:12s} | {lang.value:2s} | {t}")
+        print(f"{classify(t).value:12s} | {detect_lang(t).value:2s} | {t}")
     print("=" * 60)
