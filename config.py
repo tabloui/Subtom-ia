@@ -148,36 +148,34 @@ def load_settings() -> Settings:
     # ========================================================
     # OPENROUTER
     #
-    # Ahora admite:
+    # Admite hasta 20 claves:
     #
     # OPENROUTER_API_KEY
     # OPENROUTER_API_KEY_2
     # OPENROUTER_API_KEY_3
-    # OPENROUTER_API_KEY_4
+    # ...
+    # OPENROUTER_API_KEY_20
     #
     # ========================================================
 
     openrouter_api_keys: list[str] = []
 
-    for variable in (
-        "OPENROUTER_API_KEY",
-        "OPENROUTER_API_KEY_2",
-        "OPENROUTER_API_KEY_3",
-        "OPENROUTER_API_KEY_4",
-    ):
+    # Clave principal (sin número)
+    main = _env("OPENROUTER_API_KEY")
+    if main:
+        openrouter_api_keys.append(main)
 
-        value = _env(variable)
-
+    # Claves numeradas: _2, _3, _4, ... _20
+    for n in range(2, 21):
+        value = _env(f"OPENROUTER_API_KEY_{n}")
         if value:
-            openrouter_api_keys.append(
-                value
-            )
+            openrouter_api_keys.append(value)
 
     if not openrouter_api_keys:
 
         raise RuntimeError(
             "Falta OPENROUTER_API_KEY "
-            "(o _2, _3, _4)"
+            "(o _2, _3, ... _20)"
         )
 
     # ========================================================
@@ -211,8 +209,8 @@ def load_settings() -> Settings:
     # ========================================================
     # AI MODEL
     #
-    # Modelo por defecto. ai.py puede sobreescribirlo
-    # dinámicamente según la tarea (visión / código / texto).
+    # Modelo por defecto. ai.py lo sobreescribe
+    # dinámicamente según la tarea.
     # ========================================================
 
     ai_model = _env(
@@ -395,6 +393,15 @@ def load_settings() -> Settings:
 
         # ----------------------------------------------------
         # FLUX (generación de imágenes)
+        #
+        # Endpoints disponibles en BFL:
+        #   flux-2-flex     → logos y tipografía (recomendado)
+        #   flux-2-pro      → calidad máxima general
+        #   flux-pro-1.1    → equilibrado
+        #   flux-dev        → rápido y barato
+        #
+        # Las claves FLUX son las mismas que las de BFL
+        # (dashboard.bfl.ai). Se envían en header "x-key".
         # ----------------------------------------------------
 
         flux_api_key_1=_env(
@@ -410,12 +417,9 @@ def load_settings() -> Settings:
             "https://api.bfl.ai/v1",
         ),
 
-        # Endpoint oficial de BFL. "flux-schnell" no existe
-        # como endpoint en la API; el correcto es flux-pro-1.1
-        # (también puedes usar flux-2-pro-preview o flux-dev).
         flux_endpoint=_env(
             "FLUX_ENDPOINT",
-            "flux-pro-1.1",
+            "flux-2-flex",
         ),
     )
 
