@@ -947,9 +947,12 @@ class Agent:
         last_error: Exception | None = None
 
         for modelo_actual in modelos:
+
             t0 = asyncio.get_event_loop().time()
+
             try:
                 for _ in range(config.ai_max_tool_rounds):
+
                     response = await connector.complete(
                         messages,
                         self.tool_schemas(),
@@ -977,11 +980,21 @@ class Agent:
                             answer = "No he recibido una respuesta de texto del modelo."
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
-                        motor.record(model=modelo_actual, task=task, lang=lang, latency=dt, error=False)
-                        return answer, image_url                    for call in tool_calls:
+                        motor.record(
+                            model=modelo_actual,
+                            task=task,
+                            lang=lang,
+                            latency=dt,
+                            error=False,
+                        )
+                        return answer, image_url
+
+                    for call in tool_calls:
+
                         function = call.get("function") or {}
                         name = function.get("name") or ""
                         raw_args = function.get("arguments", "{}")
+
                         if isinstance(raw_args, str):
                             try:
                                 args = json.loads(raw_args)
@@ -991,11 +1004,15 @@ class Agent:
                             args = raw_args
                         else:
                             args = {}
+
                         if not isinstance(args, dict):
                             args = {}
+
                         result = await self.run_tool(name, args)
+
                         if isinstance(result, dict) and result.get("image_url"):
                             image_url = result["image_url"]
+
                         messages.append({
                             "role": "tool",
                             "tool_call_id": call.get("id") or "",
@@ -1015,6 +1032,7 @@ class Agent:
                     error=True,
                     error_msg=str(exc)[:200],
                 )
+
                 err_txt = str(exc).lower()
 
                 if (
