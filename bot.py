@@ -11,6 +11,7 @@ import discord
 
 from ai import agent
 from config import config
+from motor import motor
 
 
 # ============================================================
@@ -35,6 +36,7 @@ async def health(_: web.Request) -> web.Response:
         {
             "ok": True,
             "service": config.bot_name,
+            "provider": "groq",
             "model": config.ai_model,
         }
     )
@@ -42,8 +44,19 @@ async def health(_: web.Request) -> web.Response:
 
 async def root(_: web.Request) -> web.Response:
     return web.Response(
-        text=f"{config.bot_name} online"
+        text=f"{config.bot_name} online (Groq)"
     )
+
+
+async def metrics(_: web.Request) -> web.Response:
+    try:
+        data = motor.snapshot()
+    except Exception as exc:
+        return web.json_response(
+            {"error": f"{type(exc).__name__}: {exc}"},
+            status=500,
+        )
+    return web.json_response(data)
 
 
 async def start_http() -> web.AppRunner:
@@ -54,6 +67,7 @@ async def start_http() -> web.AppRunner:
     app.router.add_get("/health", health)
     app.router.add_get("/api/health", health)
     app.router.add_get("/api/status", health)
+    app.router.add_get("/metrics", metrics)
 
     runner = web.AppRunner(app)
 
@@ -125,6 +139,10 @@ async def extract_prompt(
         "!imagen ",
         "/imagen ",
         "imagen: ",
+        "!draw ",
+        "/draw ",
+        "genera: ",
+        "dibuja: ",
     )
 
     for prefix in prefixes:
@@ -148,10 +166,6 @@ async def extract_prompt(
 async def download_attachments(
     message: discord.Message,
 ) -> list[dict]:
-    """
-    Descarga los adjuntos al workspace y devuelve
-    info de cada uno: ruta local, nombre, tipo, url.
-    """
 
     if not message.attachments:
         return []
@@ -255,23 +269,14 @@ def build_user_context(
 
         for att in attachments:
 
-            if att["is_image"]:
+            kind = "imagen" if att["is_image"] else "archivo"
 
-                lines.append(
-                    f"  * [imagen] {att['filename']} "
-                    f"({att['content_type']}) "
-                    f"-> ruta local: {att['path']}"
-                )
+            lines.append(
+                f"  * [{kind}] {att['filename']} "
+                f"({att['content_type']}) "
+                f"-> ruta local: {att['path']}"
+            )
 
-            else:
-
-                lines.append(
-                    f"  * [archivo] {att['filename']} "
-                    f"({att['content_type']}) "
-                    f"-> ruta local: {att['path']}"
-                )
-
-        # Instrucciones extra para el modelo
         has_image = any(a["is_image"] for a in attachments)
         has_pdf = any(
             (a["content_type"] or "") == "application/pdf"
@@ -288,14 +293,15 @@ def build_user_context(
         if has_image:
             lines.append(
                 "- El usuario adjuntó una imagen. "
-                "Analízala directamente (la ves multimodal)."
+                "Analízala si el modelo soporta visión; "
+                "si no, menciónalo en la respuesta."
             )
 
         if has_pdf:
             lines.append(
                 "- El usuario adjuntó un PDF. "
-                "Si necesitas leerlo, usa la herramienta "
-                "file_read_pdf con la ruta local indicada."
+                "Si necesitas leerlo, usa file_read_pdf "
+                "con la ruta local indicada."
             )
 
         if has_text:
@@ -316,10 +322,6 @@ async def send_files(
     chat: discord.Messageable,
     files: list,
 ) -> None:
-    """
-    Envía archivos al chat.
-    Acepta rutas (str/Path) o tuplas (nombre, bytes).
-    """
 
     for item in files:
 
@@ -361,10 +363,6 @@ async def send_generated_image(
     chat: discord.Messageable,
     image_url: str,
 ) -> None:
-    """
-    Descarga la imagen generada por FLUX y la manda como
-    adjunto de Discord (las URLs de BFL expiran en 10 min).
-    """
 
     try:
 
@@ -385,7 +383,6 @@ async def send_generated_image(
 
                     return
 
-                # Fallback: mandar el link si no se puede descargar
                 await chat.send(
                     f"🖼️ Imagen generada: {image_url}"
                 )
@@ -411,6 +408,7 @@ async def on_ready() -> None:
 
     print(
         f"{config.bot_name} | "
+        f"proveedor=Groq | "
         f"modelo={config.ai_model}"
     )
 
@@ -425,7 +423,6 @@ async def on_message(
 
     prompt, flag_image = await extract_prompt(message)
 
-    # Descargar adjuntos
     attachments = await download_attachments(message)
 
     if not prompt and not attachments:
@@ -436,7 +433,6 @@ async def on_message(
 
         return
 
-    # Construir contexto
     user_context = build_user_context(
         message,
         attachments,
@@ -446,13 +442,11 @@ async def on_message(
         f"{user_context}\n\n{prompt}"
     ).strip()
 
-    # Feedback visual
     try:
         await message.add_reaction("⏳")
     except Exception:
         pass
 
-    # Llamar al agente
     try:
 
         result = await agent.ask(
@@ -480,7 +474,6 @@ async def on_message(
         except Exception:
             pass
 
-    # Soportar 2 o 3 valores
     files = None
 
     if isinstance(result, tuple) and len(result) == 3:
@@ -488,17 +481,14 @@ async def on_message(
     else:
         response, image_url = result
 
-    # Respuesta de texto
     await send_long(message.channel, response)
 
-    # Imagen generada (descargada y reenviada como archivo)
     if image_url:
         await send_generated_image(
             message.channel,
             image_url,
         )
 
-    # Archivos del bot
     if files:
         await send_files(message.channel, files)
 
