@@ -24,38 +24,9 @@ IMAGE_EXTENSIONS = {
 
 class Agent:
 
-    VISION_MODELS = [
-        "llama-3.2-11b-vision-preview",
-        "llama-3.2-90b-vision-preview",
-    ]
-
-    CODE_MODELS = [
-        "llama-3.3-70b-versatile",
-        "openai/gpt-oss-120b",
-        "qwen/qwen3-32b",
-        "deepseek-r1-distill-llama-70b",
-        "moonshotai/kimi-k2-instruct",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "meta-llama/llama-4-maverick-17b-128e-instruct",
-    ]
-
-    TEXT_MODELS = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "qwen/qwen3-32b",
-        "moonshotai/kimi-k2-instruct",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "meta-llama/llama-4-maverick-17b-128e-instruct",
-        "gemma2-9b-it",
-    ]
-
     def __init__(self) -> None:
         self.pool: asyncpg.Pool | None = None
         self.files = FileTools(config.workspace)
-        self._vision_models: list[str] = []
-        self._vision_loaded: bool = False
 
         from collections import deque
         self._flux_keys = deque(
@@ -94,9 +65,6 @@ class Agent:
                 ON subtom_memory(user_id, channel_id, created_at DESC)
                 """
             )
-
-        await self._refresh_vision_models()
-        await self._refresh_free_models()
 
         try:
             await motor.prewarm()
@@ -166,54 +134,6 @@ class Agent:
             for row in rows
         ]
 
-    async def _refresh_vision_models(self) -> None:
-        self._vision_models = list(self.VISION_MODELS)
-        self._vision_loaded = False
-        print(
-            f"[VISION] Groq: usando lista estática "
-            f"({len(self._vision_models)} modelos)"
-        )
-
-    async def _refresh_free_models(self) -> None:
-        try:
-            timeout = aiohttp.ClientTimeout(total=20)
-            headers = {
-                "Authorization": f"Bearer {config.groq_api_key}",
-            }
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(
-                    f"{config.groq_base_url}/models",
-                    headers=headers,
-                ) as resp:
-                    if resp.status != 200:
-                        print(f"[MODELS] Groq /models HTTP {resp.status}")
-                        return
-                    data = await resp.json(content_type=None)
-        except Exception as exc:
-            print(f"[MODELS] No se pudo refrescar lista: {exc}")
-            return
-
-        models = data.get("data") or []
-        valid_ids: set[str] = set()
-        for m in models:
-            mid = m.get("id", "")
-            if mid:
-                valid_ids.add(mid)
-
-        if not valid_ids:
-            return
-
-        old_code = len(self.CODE_MODELS)
-        old_text = len(self.TEXT_MODELS)
-
-        self.CODE_MODELS = [m for m in self.CODE_MODELS if m in valid_ids]
-        self.TEXT_MODELS = [m for m in self.TEXT_MODELS if m in valid_ids]
-
-        print(
-            f"[MODELS] CODE: {old_code}→{len(self.CODE_MODELS)} | "
-            f"TEXT: {old_text}→{len(self.TEXT_MODELS)}"
-        )
-
     def _extract_image_paths(self, prompt: str) -> list[str]:
         paths: list[str] = []
         for match in re.finditer(
@@ -274,14 +194,7 @@ class Agent:
         task: TaskType,
         force_image: bool = False,
     ) -> list[str]:
-        vision_list = self._vision_models or self.VISION_MODELS
-        if force_image or task == TaskType.IMAGE_GEN:
-            return vision_list
-        if task == TaskType.IMAGE_READ:
-            return vision_list
-        if task == TaskType.CODE:
-            return motor.pick_models(self.CODE_MODELS, task, top=4)
-        return motor.pick_models(self.TEXT_MODELS, task, top=4)
+        return [config.ai_model]
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
@@ -1065,9 +978,7 @@ class Agent:
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
                         motor.record(model=modelo_actual, task=task, lang=lang, latency=dt, error=False)
-                        return answer, image_url
-
-                    for call in tool_calls:
+                        return answer, image_url                    for call in tool_calls:
                         function = call.get("function") or {}
                         name = function.get("name") or ""
                         raw_args = function.get("arguments", "{}")
@@ -1104,7 +1015,6 @@ class Agent:
                     error=True,
                     error_msg=str(exc)[:200],
                 )
-
                 err_txt = str(exc).lower()
 
                 if (
