@@ -42,9 +42,8 @@ class Settings:
     # Database
     database_url: str
 
-    # Groq (proveedor de IA)
-    groq_api_key: str
-    groq_base_url: str
+    # Cerebras
+    cerebras_api_key: str
     ai_model: str
     ai_temperature: float
     ai_max_tokens: int
@@ -77,7 +76,7 @@ class Settings:
     github_token: str | None
     vercel_token: str | None
 
-    # FLUX (generación de imágenes)
+    # FLUX
     flux_api_key_1: str | None
     flux_api_key_2: str | None
     flux_base_url: str
@@ -97,11 +96,11 @@ def load_settings() -> Settings:
     # --- DATABASE ---
     database_url = _required("DATABASE_URL")
 
-    # --- GROQ ---
-    groq_api_key = _required("GROQ_API_KEY")
+    # --- CEREBRAS ---
+    cerebras_api_key = _required("CEREBRAS_API_KEY")
 
     # --- TEMPERATURA ---
-    temperature_raw = _env("AI_TEMPERATURE", "0.35")
+    temperature_raw = _env("AI_TEMPERATURE", "0.7")
     try:
         ai_temperature = float(temperature_raw)
     except ValueError as exc:
@@ -109,35 +108,22 @@ def load_settings() -> Settings:
     if not 0 <= ai_temperature <= 2:
         raise RuntimeError("AI_TEMPERATURE debe estar entre 0 y 2")
 
-    # --- MODELO POR DEFECTO (Groq) ---
-    # Opciones:
-    #   llama-3.3-70b-versatile  → equilibrado, soporta tools
-    #   llama-3.1-8b-instant     → rapidísimo, chat simple
-    #   openai/gpt-oss-120b      → potente para razonamiento
-    ai_model = _env("AI_MODEL", "llama-3.3-70b-versatile")
+    # --- MODELO ---
+    ai_model = _env("AI_MODEL", "gemma-4-31b")
 
     # --- SETTINGS ---
     return Settings(
-        # Discord
         discord_token=discord_token,
         allowed_user_id=allowed_user_id,
-
-        # Database
         database_url=database_url,
 
-        # Groq
-        groq_api_key=groq_api_key,
-        groq_base_url=_env(
-            "GROQ_BASE_URL",
-            "https://api.groq.com/openai/v1",
-        ),
+        cerebras_api_key=cerebras_api_key,
         ai_model=ai_model,
         ai_temperature=ai_temperature,
         ai_max_tokens=_int("AI_MAX_TOKENS", 5000, 256, 16000),
         ai_max_tool_rounds=_int("MAX_TOOL_ROUNDS", 10, 1, 30),
         ai_timeouts_seconds=_int("AI_TIMEOUT_SECONDS", 90, 10, 300),
 
-        # Bot
         bot_name=_env("BOT_NAME", "Subtom"),
         bot_language=_env("BOT_LANGUAGE", "español"),
         bot_personality=_env(
@@ -164,23 +150,18 @@ def load_settings() -> Settings:
             "mi código antes",
         ),
 
-        # Usuario
         user_name=_env("USER_NAME", "Amin"),
         user_description=_env("USER_DESCRIPTION", "Amin, un programador"),
 
-        # Memory
         memory_limit=_int("MEMORY_LIMIT", 30, 0, 10080),
-        memory_messages=_int("MEMORY_MESSAGES", 60, 4, 200),
+        memory_messages=_int("MEMORY_MESSAGES", 20, 4, 200),
 
-        # Server
         workspace=_env("SUBTOM_WORKSPACE", "./workspace"),
         port=_int("PORT", 3000, 1, 65535),
 
-        # Optional APIs
         github_token=_env("GITHUB_TOKEN"),
         vercel_token=_env("VERCEL_TOKEN"),
 
-        # FLUX
         flux_api_key_1=_env("FLUX_API_KEY_1"),
         flux_api_key_2=_env("FLUX_API_KEY_2"),
         flux_base_url=_env("FLUX_BASE_URL", "https://api.bfl.ai/v1"),
