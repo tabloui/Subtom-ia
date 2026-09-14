@@ -10,67 +10,19 @@ from config import config
 
 
 class AIConnector:
-    """Conector para Groq (API compatible con OpenAI)."""
 
     def __init__(self) -> None:
         self.base_url = config.groq_base_url.rstrip("/")
         self._cooldown_until: float = 0.0
 
-    # ------------------------------------------------------------------
-    # SYSTEM PROMPT
-    # ------------------------------------------------------------------
-
     def system_prompt(self) -> str:
-        parts: list[str] = []
-
-        if config.bot_identity:
-            parts.append(f"# Identidad\n{config.bot_identity}")
-
-        parts.append(f"# Nombre\n{config.bot_name}")
-
-        if config.bot_language:
-            parts.append(
-                f"# Idioma\nResponde siempre en {config.bot_language}."
-            )
-
-        if config.bot_personality:
-            parts.append(f"# Personalidad\n{config.bot_personality}")
-
-        if config.bot_style:
-            parts.append(f"# Estilo\n{config.bot_style}")
-
-        if config.bot_creator:
-            parts.append(f"# Creador\n{config.bot_creator}")
-
-        if config.bot_capabilities:
-            parts.append(f"# Capacidades\n{config.bot_capabilities}")
-
-        if config.user_name or config.user_description:
-            user_block = "# Usuario"
-            if config.user_name:
-                user_block += f"\nNombre: {config.user_name}"
-            if config.user_description:
-                user_block += f"\nDescripción: {config.user_description}"
-            parts.append(user_block)
-
-        if config.bot_system_text:
-            parts.append(f"# Instrucciones\n{config.bot_system_text}")
-
-        return "\n\n".join(parts)
-
-    # ------------------------------------------------------------------
-    # HEADERS
-    # ------------------------------------------------------------------
+        return "Subtom IA de Amin. Frío, amable, calculador. Sin emojis. Español. Directo, técnico, conciso. No inventes."
 
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {config.groq_api_key}",
             "Content-Type": "application/json",
         }
-
-    # ------------------------------------------------------------------
-    # UTILIDAD DE TIEMPO
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _now() -> float:
@@ -82,10 +34,6 @@ class AIConnector:
     def _in_cooldown(self) -> bool:
         return self._now() < self._cooldown_until
 
-    # ------------------------------------------------------------------
-    # LLAMADA PRINCIPAL
-    # ------------------------------------------------------------------
-
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -93,7 +41,6 @@ class AIConnector:
         model: str | None = None,
     ) -> dict[str, Any]:
 
-        # Inyectar system prompt si no hay uno
         has_system = any(m.get("role") == "system" for m in messages)
         if not has_system:
             messages = [
@@ -114,7 +61,6 @@ class AIConnector:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        # Si está en cooldown, resetear (con Groq el cooldown es corto)
         if self._in_cooldown():
             print("[CONNECTOR] Cooldown activo, reintentando igual.")
             self._cooldown_until = 0.0
@@ -131,7 +77,6 @@ class AIConnector:
 
                     body = await response.text()
 
-                    # Rate limit
                     if response.status == 429:
                         self._cooldown_until = self._now() + 10
                         raise RuntimeError(
@@ -139,21 +84,24 @@ class AIConnector:
                             f"{body[:500]}"
                         )
 
-                    # Clave inválida
                     if response.status in (401, 403):
                         self._cooldown_until = self._now() + 30
                         raise RuntimeError(
                             f"Groq HTTP {response.status}: {body[:500]}"
                         )
 
-                    # Modelo no existe o fue deprecado
                     if response.status == 404:
                         raise RuntimeError(
                             f"Groq HTTP 404 (modelo {modelo_usar}): "
                             f"{body[:500]}"
                         )
 
-                    # Error del servidor
+                    if response.status == 413:
+                        raise RuntimeError(
+                            f"Groq HTTP 413 (petición demasiado grande): "
+                            f"{body[:500]}"
+                        )
+
                     if response.status >= 500:
                         raise RuntimeError(
                             f"Groq HTTP {response.status} "
@@ -177,10 +125,6 @@ class AIConnector:
                 raise RuntimeError(
                     f"Error de conexión con Groq: {exc}"
                 ) from exc
-
-    # ------------------------------------------------------------------
-    # UTILIDAD
-    # ------------------------------------------------------------------
 
     def clean_tool_result(self, result: Any) -> str:
         try:
