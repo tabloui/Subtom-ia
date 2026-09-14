@@ -8,7 +8,7 @@ import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import aiohttp
 
@@ -348,7 +348,7 @@ class Metrics:
 
         return {
             "uptime_s": round(time.time() - self.t_start, 1),
-            "provider": "groq",
+            "provider": "cerebras",
             "models": dump(self.per_model),
             "keys": dump(self.per_key),
             "tasks": dump(self.per_task),
@@ -589,31 +589,31 @@ class Motor:
                 except Exception as exc:
                     results[url] = f"err:{type(exc).__name__}"
 
-            groq_headers = {
-                "Authorization": f"Bearer {config.groq_api_key}",
+            cerebras_headers = {
+                "Authorization": f"Bearer {config.cerebras_api_key}",
             }
 
             await asyncio.gather(
-                ping(f"{config.groq_base_url}/models", groq_headers),
+                ping("https://api.cerebras.ai/v1/models", cerebras_headers),
                 ping(config.flux_base_url.rstrip("/")),
                 ping("https://html.duckduckgo.com/html/"),
                 return_exceptions=True,
             )
 
-        print(f"[MOTOR] prewarm (Groq) → {results}")
+        print(f"[MOTOR] prewarm (Cerebras) → {results}")
 
     async def healthcheck_loop(self, interval: float = 300.0) -> None:
         while True:
             try:
                 await asyncio.sleep(interval)
                 headers = {
-                    "Authorization": f"Bearer {config.groq_api_key}",
+                    "Authorization": f"Bearer {config.cerebras_api_key}",
                 }
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=15)
                 ) as s:
                     async with s.get(
-                        f"{config.groq_base_url}/models",
+                        "https://api.cerebras.ai/v1/models",
                         headers=headers,
                     ) as r:
                         if r.status == 200:
@@ -629,7 +629,7 @@ class Motor:
                                     if mid in alive:
                                         self.breaker.reset(m)
                             print(
-                                f"[MOTOR] healthcheck Groq ok, "
+                                f"[MOTOR] healthcheck Cerebras ok, "
                                 f"{len(alive)} modelos disponibles"
                             )
             except asyncio.CancelledError:
@@ -649,23 +649,3 @@ class Motor:
 
 
 motor = Motor()
-
-
-if __name__ == "__main__":
-    tests = [
-        "genera un gato volando en una moto",
-        "dibújame un dragón rojo",
-        "busca el precio del bitcoin",
-        "quién ganó el último partido del Madrid",
-        "arregla este bug en python",
-        "lee el archivo config.py",
-        "grep la palabra TODO en mis archivos",
-        "https://github.com/user/repo",
-        "resume el pdf adjunto",
-        "hola qué tal",
-        "explícame cómo funciona asyncio",
-    ]
-    print("=" * 60)
-    for t in tests:
-        print(f"{classify(t).value:12s} | {detect_lang(t).value:2s} | {t}")
-    print("=" * 60)
