@@ -12,15 +12,20 @@ from config import config
 class AIConnector:
 
     def __init__(self) -> None:
-        self.base_url = config.groq_base_url.rstrip("/")
+        self.base_url = "https://api.cerebras.ai/v1"
         self._cooldown_until: float = 0.0
 
     def system_prompt(self) -> str:
-        return "Subtom IA de Amin. Frío, amable, calculador. Sin emojis. Español. Directo, técnico, conciso. No inventes."
+        return (
+            "Subtom IA de Amin. Amable, gracioso, cercano. "
+            "Sin exceso de emojis. Español. Directo y conciso. "
+            "Tienes herramientas (web, archivos, GitHub, Vercel, "
+            "imágenes); úsalas cuando hagan falta. No inventes."
+        )
 
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {config.groq_api_key}",
+            "Authorization": f"Bearer {config.cerebras_api_key}",
             "Content-Type": "application/json",
         }
 
@@ -80,31 +85,31 @@ class AIConnector:
                     if response.status == 429:
                         self._cooldown_until = self._now() + 10
                         raise RuntimeError(
-                            f"Groq HTTP 429 (modelo {modelo_usar}): "
+                            f"Cerebras HTTP 429 (modelo {modelo_usar}): "
                             f"{body[:500]}"
                         )
 
                     if response.status in (401, 403):
                         self._cooldown_until = self._now() + 30
                         raise RuntimeError(
-                            f"Groq HTTP {response.status}: {body[:500]}"
+                            f"Cerebras HTTP {response.status}: {body[:500]}"
                         )
 
                     if response.status == 404:
                         raise RuntimeError(
-                            f"Groq HTTP 404 (modelo {modelo_usar}): "
+                            f"Cerebras HTTP 404 (modelo {modelo_usar}): "
                             f"{body[:500]}"
                         )
 
                     if response.status == 413:
                         raise RuntimeError(
-                            f"Groq HTTP 413 (petición demasiado grande): "
+                            f"Cerebras HTTP 413 (petición demasiado grande): "
                             f"{body[:500]}"
                         )
 
                     if response.status >= 500:
                         raise RuntimeError(
-                            f"Groq HTTP {response.status} "
+                            f"Cerebras HTTP {response.status} "
                             f"(modelo {modelo_usar}): {body[:500]}"
                         )
 
@@ -113,17 +118,17 @@ class AIConnector:
                             return json.loads(body)
                         except json.JSONDecodeError as exc:
                             raise RuntimeError(
-                                f"Respuesta inválida de Groq: {body[:300]}"
+                                f"Respuesta inválida de Cerebras: {body[:300]}"
                             ) from exc
 
                     raise RuntimeError(
-                        f"Groq HTTP {response.status} "
+                        f"Cerebras HTTP {response.status} "
                         f"(modelo {modelo_usar}): {body[:500]}"
                     )
 
             except aiohttp.ClientError as exc:
                 raise RuntimeError(
-                    f"Error de conexión con Groq: {exc}"
+                    f"Error de conexión con Cerebras: {exc}"
                 ) from exc
 
     def clean_tool_result(self, result: Any) -> str:
