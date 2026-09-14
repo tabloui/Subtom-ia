@@ -36,7 +36,7 @@ async def health(_: web.Request) -> web.Response:
         {
             "ok": True,
             "service": config.bot_name,
-            "provider": "groq",
+            "provider": "cerebras",
             "model": config.ai_model,
         }
     )
@@ -44,7 +44,7 @@ async def health(_: web.Request) -> web.Response:
 
 async def root(_: web.Request) -> web.Response:
     return web.Response(
-        text=f"{config.bot_name} online (Groq)"
+        text=f"{config.bot_name} online (Cerebras)"
     )
 
 
@@ -293,15 +293,14 @@ def build_user_context(
         if has_image:
             lines.append(
                 "- El usuario adjuntó una imagen. "
-                "Analízala si el modelo soporta visión; "
-                "si no, menciónalo en la respuesta."
+                "Analízala directamente."
             )
 
         if has_pdf:
             lines.append(
                 "- El usuario adjuntó un PDF. "
-                "Si necesitas leerlo, usa file_read_pdf "
-                "con la ruta local indicada."
+                "Si necesitas leerlo, usa la herramienta "
+                "file_read_pdf con la ruta local indicada."
             )
 
         if has_text:
@@ -408,7 +407,7 @@ async def on_ready() -> None:
 
     print(
         f"{config.bot_name} | "
-        f"proveedor=Groq | "
+        f"proveedor=Cerebras | "
         f"modelo={config.ai_model}"
     )
 
@@ -505,6 +504,8 @@ async def main() -> None:
 
         await agent.init()
 
+        motor.start_healthcheck(interval=300)
+
         runner = await start_http()
 
         await client.start(config.discord_token)
@@ -512,6 +513,8 @@ async def main() -> None:
     finally:
 
         print("Cerrando Subtom...")
+
+        motor.stop_healthcheck()
 
         await agent.close()
 
