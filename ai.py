@@ -30,12 +30,10 @@ class Agent:
 
         from collections import deque
         self._flux_keys = deque(
-            key
-            for key in (
+            key for key in (
                 config.flux_api_key_1,
                 config.flux_api_key_2,
-            )
-            if key
+            ) if key
         )
 
     async def init(self) -> None:
@@ -45,7 +43,6 @@ class Agent:
             max_size=3,
             command_timeout=60,
         )
-
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
@@ -65,7 +62,6 @@ class Agent:
                 ON subtom_memory(user_id, channel_id, created_at DESC)
                 """
             )
-
         try:
             await motor.prewarm()
         except Exception as exc:
@@ -77,9 +73,7 @@ class Agent:
             self.pool = None
 
     async def cleanup_memory(self) -> None:
-        if not self.pool:
-            return
-        if config.memory_limit <= 0:
+        if not self.pool or config.memory_limit <= 0:
             return
         await self.pool.execute(
             """
@@ -89,13 +83,7 @@ class Agent:
             config.memory_limit,
         )
 
-    async def save(
-        self,
-        user_id: int,
-        channel_id: int,
-        role: str,
-        content: str,
-    ) -> None:
+    async def save(self, user_id: int, channel_id: int, role: str, content: str) -> None:
         if not self.pool:
             return
         await self.pool.execute(
@@ -103,17 +91,10 @@ class Agent:
             INSERT INTO subtom_memory(user_id, channel_id, role, content)
             VALUES($1, $2, $3, $4)
             """,
-            user_id,
-            channel_id,
-            role,
-            content[:30000],
+            user_id, channel_id, role, content[:30000],
         )
 
-    async def history(
-        self,
-        user_id: int,
-        channel_id: int,
-    ) -> list[dict[str, Any]]:
+    async def history(self, user_id: int, channel_id: int) -> list[dict[str, Any]]:
         if not self.pool:
             return []
         rows = await self.pool.fetch(
@@ -124,434 +105,432 @@ class Agent:
             ORDER BY created_at DESC
             LIMIT $3
             """,
-            user_id,
-            channel_id,
-            config.memory_messages,
+            user_id, channel_id, config.memory_messages,
         )
-        rows = list(reversed(rows))
-        return [
-            {"role": row["role"], "content": row["content"]}
-            for row in rows
-        ]
+        return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
     def _extract_image_paths(self, prompt: str) -> list[str]:
         paths: list[str] = []
-        for match in re.finditer(
-            r"->\s*ruta local:\s*(\S+)",
-            prompt,
-        ):
-            raw = match.group(1).strip().strip('",')
+        for m in re.finditer(r"->\s*ruta local:\s*(\S+)", prompt):
+            raw = m.group(1).strip().strip('",')
             try:
                 p = Path(raw)
-                if (
-                    p.suffix.lower() in IMAGE_EXTENSIONS
-                    and p.exists()
-                    and p.is_file()
-                ):
+                if p.suffix.lower() in IMAGE_EXTENSIONS and p.exists() and p.is_file():
                     paths.append(str(p))
             except Exception:
                 continue
-
-        seen: set[str] = set()
-        unique: list[str] = []
+        seen, unique = set(), []
         for p in paths:
             if p not in seen:
                 seen.add(p)
                 unique.append(p)
         return unique
 
-    def _build_multimodal_content(
-        self,
-        prompt: str,
-        image_paths: list[str],
-    ) -> list[dict[str, Any]]:
-        content: list[dict[str, Any]] = [
-            {"type": "text", "text": prompt}
-        ]
+    def _build_multimodal_content(self, prompt: str, image_paths: list[str]) -> list[dict[str, Any]]:
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for path in image_paths:
             try:
                 info = self.files.read_image_base64(path)
                 if info["size"] > 20 * 1024 * 1024:
-                    content.append({
-                        "type": "text",
-                        "text": f"[Imagen omitida >20MB: {info['filename']}]",
-                    })
+                    content.append({"type": "text", "text": f"[Imagen >20MB omitida: {info['filename']}]"})
                     continue
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": info["data_url"]},
-                })
+                content.append({"type": "image_url", "image_url": {"url": info["data_url"]}})
             except Exception as exc:
-                content.append({
-                    "type": "text",
-                    "text": f"[No se pudo cargar {path}: {exc}]",
-                })
+                content.append({"type": "text", "text": f"[No se pudo cargar {path}: {exc}]"})
         return content
 
-    def _select_model(
-        self,
-        prompt: str,
-        task: TaskType,
-        force_image: bool = False,
-    ) -> list[str]:
+    def _select_model(self, prompt: str, task: TaskType, force_image: bool = False) -> list[str]:
         return [config.ai_model]
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "web_search",
-                    "description": (
-                        "Busca información actual en internet con "
-                        "DuckDuckGo. Devuelve título, URL y snippet. "
-                        "Usa web_fetch después para leer una URL."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string"},
-                            "max_results": {
-                                "type": "integer",
-                                "default": 5,
-                                "minimum": 1,
-                                "maximum": 10,
-                            },
-                        },
-                        "required": ["query"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "web_fetch",
-                    "description": (
-                        "Descarga una página web y devuelve el texto "
-                        "legible. Úsala después de web_search."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "url": {"type": "string"},
-                            "max_chars": {
-                                "type": "integer",
-                                "default": 8000,
-                                "minimum": 500,
-                                "maximum": 30000,
-                            },
-                        },
-                        "required": ["url"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_list",
-                    "description": "Lista archivos del workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "default": "."},
-                        },
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_read",
-                    "description": "Lee un archivo de texto.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_write",
-                    "description": "Crea o reemplaza un archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "content": {"type": "string"},
-                        },
-                        "required": ["path", "content"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_append",
-                    "description": "Añade al final de un archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "content": {"type": "string"},
-                        },
-                        "required": ["path", "content"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_search",
-                    "description": "Busca archivos por patrón.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string"},
-                            "path": {"type": "string", "default": "."},
-                        },
-                        "required": ["query"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_info",
-                    "description": "Info de un archivo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_mkdir",
-                    "description": "Crea una carpeta.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_delete",
-                    "description": "Borra un archivo o carpeta.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "recursive": {"type": "boolean", "default": False},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_tree",
-                    "description": "Árbol del workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "default": "."},
-                            "max_depth": {"type": "integer", "default": 3},
-                        },
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_grep",
-                    "description": "Busca texto en archivos.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "pattern": {"type": "string"},
-                            "path": {"type": "string", "default": "."},
-                        },
-                        "required": ["pattern"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_backup",
-                    "description": "Backup con timestamp.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "file_read_pdf",
-                    "description": "Extrae texto de un PDF.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_list",
-                    "description": "Lista repos del usuario.",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_read",
-                    "description": "Lee archivo de un repo.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "repo": {"type": "string"},
-                            "path": {"type": "string"},
-                        },
-                        "required": ["repo", "path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_write",
-                    "description": "Crea/actualiza archivo en GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "repo": {"type": "string"},
-                            "path": {"type": "string"},
-                            "content": {"type": "string"},
-                            "message": {"type": "string"},
-                        },
-                        "required": ["repo", "path", "content", "message"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_create_repo",
-                    "description": "Crea un repo en GitHub.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "description": {"type": "string"},
-                            "private": {"type": "boolean", "default": False},
-                        },
-                        "required": ["name"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "github_upload_project",
-                    "description": "Sube varios archivos en un commit.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "repo": {"type": "string"},
-                            "files": {"type": "object"},
-                            "message": {"type": "string"},
-                            "branch": {"type": "string", "default": "main"},
-                        },
-                        "required": ["repo", "files", "message"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_projects",
-                    "description": "Lista proyectos Vercel.",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_deployments",
-                    "description": "Deployments de un proyecto.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"project": {"type": "string"}},
-                        "required": ["project"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_set_env",
-                    "description": "Crea/actualiza env en Vercel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "project": {"type": "string"},
-                            "key": {"type": "string"},
-                            "value": {"type": "string"},
-                        },
-                        "required": ["project", "key", "value"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "vercel_redeploy",
-                    "description": "Redeploy de un proyecto.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "project": {"type": "string"},
-                            "target": {"type": "string", "default": "production"},
-                        },
-                        "required": ["project"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "generate_image",
-                    "description": "Genera una imagen con FLUX desde un prompt.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"prompt": {"type": "string"}},
-                        "required": ["prompt"],
-                    },
-                },
-            },
+            # ============ WEB ============
+            {"type": "function", "function": {
+                "name": "web_search",
+                "description": "Busca en internet con DuckDuckGo. Devuelve título, URL y snippet.",
+                "parameters": {"type": "object", "properties": {
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer", "default": 5},
+                }, "required": ["query"]},
+            }},
+            {"type": "function", "function": {
+                "name": "web_fetch",
+                "description": "Descarga una URL y devuelve el texto legible.",
+                "parameters": {"type": "object", "properties": {
+                    "url": {"type": "string"},
+                    "max_chars": {"type": "integer", "default": 8000},
+                }, "required": ["url"]},
+            }},
+
+            # ============ ARCHIVOS ============
+            {"type": "function", "function": {
+                "name": "file_list",
+                "description": "Lista archivos y carpetas del workspace.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string", "default": "."},
+                }},
+            }},
+            {"type": "function", "function": {
+                "name": "file_read",
+                "description": "Lee un archivo de texto.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                }, "required": ["path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_write",
+                "description": "Crea o reemplaza un archivo de texto.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                }, "required": ["path", "content"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_append",
+                "description": "Añade contenido al final de un archivo.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                }, "required": ["path", "content"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_search",
+                "description": "Busca archivos por patrón.",
+                "parameters": {"type": "object", "properties": {
+                    "query": {"type": "string"},
+                    "path": {"type": "string", "default": "."},
+                }, "required": ["query"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_info",
+                "description": "Info de un archivo o carpeta.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                }, "required": ["path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_mkdir",
+                "description": "Crea una carpeta.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                }, "required": ["path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_delete",
+                "description": "Elimina un archivo o carpeta.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                    "recursive": {"type": "boolean", "default": False},
+                }, "required": ["path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_tree",
+                "description": "Árbol recursivo del workspace.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string", "default": "."},
+                    "max_depth": {"type": "integer", "default": 3},
+                }},
+            }},
+            {"type": "function", "function": {
+                "name": "file_grep",
+                "description": "Busca texto dentro de archivos.",
+                "parameters": {"type": "object", "properties": {
+                    "pattern": {"type": "string"},
+                    "path": {"type": "string", "default": "."},
+                }, "required": ["pattern"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_backup",
+                "description": "Copia de seguridad con timestamp.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                }, "required": ["path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_read_pdf",
+                "description": "Extrae el texto de un PDF.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                }, "required": ["path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_count_words",
+                "description": "Cuenta las palabras de un archivo.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                }, "required": ["path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_stats",
+                "description": "Estadísticas de un archivo (tamaño, fechas).",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                }, "required": ["path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_replace_many",
+                "description": "Reemplaza varias cadenas en un archivo.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                    "replacements": {"type": "object"},
+                }, "required": ["path", "replacements"]},
+            }},
+            {"type": "function", "function": {
+                "name": "file_search_and_replace_dir",
+                "description": "Reemplaza texto en todos los archivos de una carpeta.",
+                "parameters": {"type": "object", "properties": {
+                    "directory": {"type": "string", "default": "."},
+                    "old": {"type": "string"},
+                    "new": {"type": "string"},
+                }, "required": ["old", "new"]},
+            }},
+
+            # ============ GITHUB ============
+            {"type": "function", "function": {
+                "name": "github_list",
+                "description": "Lista tus repositorios de GitHub.",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "github_read",
+                "description": "Lee un archivo de un repositorio.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "path": {"type": "string"},
+                }, "required": ["repo", "path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_write",
+                "description": "Crea o actualiza un archivo en GitHub.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "message": {"type": "string"},
+                }, "required": ["repo", "path", "content", "message"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_create_repo",
+                "description": "Crea un repositorio nuevo.",
+                "parameters": {"type": "object", "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "private": {"type": "boolean", "default": False},
+                }, "required": ["name"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_upload_project",
+                "description": "Sube varios archivos en un solo commit.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "files": {"type": "object"},
+                    "message": {"type": "string"},
+                    "branch": {"type": "string", "default": "main"},
+                }, "required": ["repo", "files", "message"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_create_issue",
+                "description": "Crea un issue en un repositorio.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                }, "required": ["repo", "title"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_list_issues",
+                "description": "Lista los issues de un repositorio.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "state": {"type": "string", "default": "open"},
+                }, "required": ["repo"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_create_pr",
+                "description": "Crea un pull request.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "title": {"type": "string"},
+                    "head": {"type": "string"},
+                    "base": {"type": "string", "default": "main"},
+                    "body": {"type": "string"},
+                }, "required": ["repo", "title", "head"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_list_prs",
+                "description": "Lista los pull requests de un repositorio.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "state": {"type": "string", "default": "open"},
+                }, "required": ["repo"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_merge_pr",
+                "description": "Fusiona un pull request.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "pr_number": {"type": "integer"},
+                }, "required": ["repo", "pr_number"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_list_branches",
+                "description": "Lista las ramas de un repositorio.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                }, "required": ["repo"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_delete_branch",
+                "description": "Elimina una rama de un repositorio.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "branch": {"type": "string"},
+                }, "required": ["repo", "branch"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_get_commit",
+                "description": "Info detallada de un commit.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "sha": {"type": "string"},
+                }, "required": ["repo", "sha"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_list_commits",
+                "description": "Historial de commits de un repositorio.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "branch": {"type": "string", "default": "main"},
+                }, "required": ["repo"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_get_file",
+                "description": "Obtiene un archivo con sus metadatos.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "path": {"type": "string"},
+                    "ref": {"type": "string", "default": "main"},
+                }, "required": ["repo", "path"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_update_file",
+                "description": "Actualiza un archivo (necesita SHA).",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "message": {"type": "string"},
+                    "sha": {"type": "string"},
+                }, "required": ["repo", "path", "content", "message", "sha"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_delete_file",
+                "description": "Elimina un archivo (necesita SHA).",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "path": {"type": "string"},
+                    "message": {"type": "string"},
+                    "sha": {"type": "string"},
+                }, "required": ["repo", "path", "message", "sha"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_search_code",
+                "description": "Busca código en GitHub.",
+                "parameters": {"type": "object", "properties": {
+                    "query": {"type": "string"},
+                }, "required": ["query"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_star_repo",
+                "description": "Marca un repositorio con estrella.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                }, "required": ["repo"]},
+            }},
+            {"type": "function", "function": {
+                "name": "github_fork_repo",
+                "description": "Hace fork de un repositorio.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                }, "required": ["repo"]},
+            }},
+
+            # ============ VERCEL ============
+            {"type": "function", "function": {
+                "name": "vercel_projects",
+                "description": "Lista tus proyectos de Vercel.",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "vercel_deployments",
+                "description": "Lista deployments de un proyecto.",
+                "parameters": {"type": "object", "properties": {
+                    "project": {"type": "string"},
+                }, "required": ["project"]},
+            }},
+            {"type": "function", "function": {
+                "name": "vercel_set_env",
+                "description": "Configura una variable de entorno en Vercel.",
+                "parameters": {"type": "object", "properties": {
+                    "project": {"type": "string"},
+                    "key": {"type": "string"},
+                    "value": {"type": "string"},
+                }, "required": ["project", "key", "value"]},
+            }},
+            {"type": "function", "function": {
+                "name": "vercel_redeploy",
+                "description": "Fuerza un nuevo deployment.",
+                "parameters": {"type": "object", "properties": {
+                    "project": {"type": "string"},
+                    "target": {"type": "string", "default": "production"},
+                }, "required": ["project"]},
+            }},
+
+            # ============ IMAGEN ============
+            {"type": "function", "function": {
+                "name": "generate_image",
+                "description": "Genera una imagen con FLUX desde un prompt.",
+                "parameters": {"type": "object", "properties": {
+                    "prompt": {"type": "string"},
+                }, "required": ["prompt"]},
+            }},
+
+            # ============ SANDBOX ============
+            {"type": "function", "function": {
+                "name": "sandbox_run_python",
+                "description": "Ejecuta código Python en un sandbox aislado.",
+                "parameters": {"type": "object", "properties": {
+                    "code": {"type": "string"},
+                }, "required": ["code"]},
+            }},
+            {"type": "function", "function": {
+                "name": "sandbox_run_shell",
+                "description": "Ejecuta un comando shell en un sandbox.",
+                "parameters": {"type": "object", "properties": {
+                    "command": {"type": "string"},
+                }, "required": ["command"]},
+            }},
+
+            # ============ DISCORD ============
+            {"type": "function", "function": {
+                "name": "discord_send_file",
+                "description": "Envía un archivo del workspace al chat de Discord.",
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                    "caption": {"type": "string", "default": ""},
+                }, "required": ["path"]},
+            }},
         ]
 
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
+            # WEB
             if name == "web_search":
                 return await self._cached_search(args)
             if name == "web_fetch":
                 return await self._cached_fetch(args)
 
+            # ARCHIVOS
             if name == "file_list":
                 return {"files": self.files.list_files(args.get("path", "."))}
             if name == "file_read":
@@ -576,20 +555,59 @@ class Agent:
                 return {"backup": self.files.backup(args["path"])}
             if name == "file_read_pdf":
                 return {"text": self.files.read_pdf_text(args["path"])}
+            if name == "file_count_words":
+                return {"words": self.files.count_words(args["path"])}
+            if name == "file_stats":
+                return self.files.file_stats(args["path"])
+            if name == "file_replace_many":
+                return self.files.replace_many(args["path"], args["replacements"])
+            if name == "file_search_and_replace_dir":
+                return self.files.search_and_replace_dir(args.get("directory", "."), args["old"], args["new"])
 
+            # GITHUB
             if name == "github_list":
                 return await self.github_request("GET", "/user/repos?per_page=100")
             if name == "github_read":
-                repo = args["repo"].strip("/")
-                path = args["path"].lstrip("/")
-                return await self.github_request("GET", f"/repos/{repo}/contents/{path}")
+                return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}")
             if name == "github_write":
                 return await self.github_write(args)
             if name == "github_create_repo":
                 return await self.github_create_repo(args)
             if name == "github_upload_project":
                 return await self.github_upload_project(args)
+            if name == "github_create_issue":
+                return await self.github_request("POST", f"/repos/{args['repo'].strip('/')}/issues", json={"title": args["title"], "body": args.get("body", "")})
+            if name == "github_list_issues":
+                return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/issues?state={args.get('state', 'open')}")
+            if name == "github_create_pr":
+                return await self.github_request("POST", f"/repos/{args['repo'].strip('/')}/pulls", json={"title": args["title"], "head": args["head"], "base": args.get("base", "main"), "body": args.get("body", "")})
+            if name == "github_list_prs":
+                return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/pulls?state={args.get('state', 'open')}")
+            if name == "github_merge_pr":
+                return await self.github_request("PUT", f"/repos/{args['repo'].strip('/')}/pulls/{args['pr_number']}/merge")
+            if name == "github_list_branches":
+                return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/branches")
+            if name == "github_delete_branch":
+                return await self.github_request("DELETE", f"/repos/{args['repo'].strip('/')}/git/refs/heads/{args['branch']}")
+            if name == "github_get_commit":
+                return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/commits/{args['sha']}")
+            if name == "github_list_commits":
+                return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/commits?sha={args.get('branch', 'main')}")
+            if name == "github_get_file":
+                return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}?ref={args.get('ref', 'main')}")
+            if name == "github_update_file":
+                content = base64.b64encode(args["content"].encode("utf-8")).decode("ascii")
+                return await self.github_request("PUT", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}", json={"message": args["message"], "content": content, "sha": args["sha"]})
+            if name == "github_delete_file":
+                return await self.github_request("DELETE", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}", json={"message": args["message"], "sha": args["sha"]})
+            if name == "github_search_code":
+                return await self.github_request("GET", f"/search/code?q={args['query']}")
+            if name == "github_star_repo":
+                return await self.github_request("PUT", f"/user/starred/{args['repo'].strip('/')}")
+            if name == "github_fork_repo":
+                return await self.github_request("POST", f"/repos/{args['repo'].strip('/')}/forks")
 
+            # VERCEL
             if name == "vercel_projects":
                 return await self.vercel_request("GET", "/v9/projects?limit=100")
             if name == "vercel_deployments":
@@ -600,8 +618,21 @@ class Agent:
             if name == "vercel_redeploy":
                 return await self.vercel_redeploy(args)
 
+            # IMAGEN
             if name == "generate_image":
                 return await self.generate_image(args["prompt"])
+
+            # SANDBOX
+            if name == "sandbox_run_python":
+                from sandbox import sandbox
+                return await sandbox.run_python(args["code"])
+            if name == "sandbox_run_shell":
+                from sandbox import sandbox
+                return await sandbox.run_shell(args["command"])
+
+            # DISCORD
+            if name == "discord_send_file":
+                return {"_send_file": args["path"], "caption": args.get("caption", "")}
 
             return {"error": f"Herramienta desconocida: {name}"}
 
@@ -636,7 +667,7 @@ class Agent:
 
     async def github_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         if not config.github_token:
-            return {"error": "GITHUB_TOKEN no está configurado."}
+            return {"error": "GITHUB_TOKEN no configurado."}
         headers = {
             "Authorization": f"Bearer {config.github_token}",
             "Accept": "application/vnd.github+json",
@@ -644,9 +675,7 @@ class Agent:
         }
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.request(
-                method, "https://api.github.com" + path, headers=headers, **kwargs
-            ) as response:
+            async with session.request(method, "https://api.github.com" + path, headers=headers, **kwargs) as response:
                 text = await response.text()
                 if response.status >= 400:
                     return {"error": f"GitHub HTTP {response.status}", "detail": text[:3000]}
@@ -883,7 +912,7 @@ class Agent:
                         return {
                             "image_url": sample,
                             "local_path": local_path,
-                            "note": "Imagen guardada. Usa github_upload_file con este local_path.",
+                            "note": "Imagen guardada localmente. Usa discord_send_file con este local_path para enviarla.",
                         }
                     if status in {"error", "failed", "request moderated", "content moderated"}:
                         return {"error": f"FLUX falló: {status}", "detail": result}
@@ -916,7 +945,7 @@ class Agent:
         channel_id: int,
         prompt: str,
         force_image: bool = False,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, list[str] | None]:
 
         task = motor.classify(prompt)
         lang = motor.lang(prompt)
@@ -936,23 +965,18 @@ class Agent:
         if force_image:
             messages.append({
                 "role": "user",
-                "content": (
-                    "Genera una imagen usando la herramienta "
-                    "generate_image para esta petición:\n\n" + prompt
-                ),
+                "content": "Genera una imagen usando la herramienta generate_image para esta petición:\n\n" + prompt,
             })
 
         image_url: str | None = None
+        files_to_send: list[str] = []
         modelos = self._select_model(prompt, task, force_image)
         last_error: Exception | None = None
 
         for modelo_actual in modelos:
-
             t0 = asyncio.get_event_loop().time()
-
             try:
                 for _ in range(config.ai_max_tool_rounds):
-
                     response = await connector.complete(
                         messages,
                         self.tool_schemas(),
@@ -980,21 +1004,13 @@ class Agent:
                             answer = "No he recibido una respuesta de texto del modelo."
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
-                        motor.record(
-                            model=modelo_actual,
-                            task=task,
-                            lang=lang,
-                            latency=dt,
-                            error=False,
-                        )
-                        return answer, image_url
+                        motor.record(model=modelo_actual, task=task, lang=lang, latency=dt, error=False)
+                        return answer, image_url, files_to_send or None
 
                     for call in tool_calls:
-
                         function = call.get("function") or {}
                         name = function.get("name") or ""
                         raw_args = function.get("arguments", "{}")
-
                         if isinstance(raw_args, str):
                             try:
                                 args = json.loads(raw_args)
@@ -1004,14 +1020,16 @@ class Agent:
                             args = raw_args
                         else:
                             args = {}
-
                         if not isinstance(args, dict):
                             args = {}
 
                         result = await self.run_tool(name, args)
 
-                        if isinstance(result, dict) and result.get("image_url"):
-                            image_url = result["image_url"]
+                        if isinstance(result, dict):
+                            if result.get("image_url"):
+                                image_url = result["image_url"]
+                            if result.get("_send_file"):
+                                files_to_send.append(result["_send_file"])
 
                         messages.append({
                             "role": "tool",
@@ -1019,7 +1037,7 @@ class Agent:
                             "content": connector.clean_tool_result(result),
                         })
 
-                raise RuntimeError("La IA agotó el número máximo de rondas de herramientas.")
+                raise RuntimeError("La IA agotó el máximo de rondas de herramientas.")
 
             except Exception as exc:
                 last_error = exc
@@ -1032,25 +1050,19 @@ class Agent:
                     error=True,
                     error_msg=str(exc)[:200],
                 )
-
                 err_txt = str(exc).lower()
 
-                if (
-                    "image" in err_txt
-                    or "vision" in err_txt
-                    or "multimodal" in err_txt
-                    or "modality" in err_txt
-                ):
+                if ("image" in err_txt or "vision" in err_txt
+                        or "multimodal" in err_txt or "modality" in err_txt):
                     print(f"[VISION] '{modelo_actual}' rechazó imagen. Siguiente.")
                 elif "404" in err_txt or "unavailable" in err_txt:
                     print(f"[MODEL-GONE] '{modelo_actual}' ya no existe. Siguiente.")
                 else:
                     print(f"[FALLBACK] '{modelo_actual}' falló: {type(exc).__name__}: {str(exc)[:200]}")
-
                 continue
 
         raise RuntimeError(
-            "Todos los modelos gratuitos fallaron. "
+            "Todos los modelos fallaron. "
             f"Último error: {last_error}"
         )
 
