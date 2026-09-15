@@ -9,11 +9,40 @@ import aiohttp
 from config import config
 
 
+def detect_provider(api_key: str) -> tuple[str, str]:
+    key = (api_key or "").strip()
+
+    if key.startswith("gsk_"):
+        return "groq", "https://api.groq.com/openai/v1"
+
+    if key.startswith("sk-ant-"):
+        return "anthropic", "https://api.anthropic.com/v1"
+
+    if key.startswith("sk-or-v1-"):
+        return "openrouter", "https://openrouter.ai/api/v1"
+
+    if key.startswith("xai-"):
+        return "xai", "https://api.x.ai/v1"
+
+    if key.startswith("AIza"):
+        return "gemini", "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    if key.startswith("csk-"):
+        return "cerebras", "https://api.cerebras.ai/v1"
+
+    if key.startswith("sk-proj-") or key.startswith("sk-"):
+        return "openai", "https://api.openai.com/v1"
+
+    return "openrouter", "https://openrouter.ai/api/v1"
+
+
 class AIConnector:
 
     def __init__(self) -> None:
-        self.base_url = "https://api.cerebras.ai/v1"
+        self.provider, self.base_url = detect_provider(config.ai_api_key)
         self._cooldown_until: float = 0.0
+        print(f"[CONNECTOR] Proveedor detectado: {self.provider}")
+        print(f"[CONNECTOR] URL base: {self.base_url}")
 
     def system_prompt(self) -> str:
         return (
@@ -25,7 +54,7 @@ class AIConnector:
 
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {config.cerebras_api_key}",
+            "Authorization": f"Bearer {config.ai_api_key}",
             "Content-Type": "application/json",
         }
 
@@ -85,31 +114,38 @@ class AIConnector:
                     if response.status == 429:
                         self._cooldown_until = self._now() + 10
                         raise RuntimeError(
-                            f"Cerebras HTTP 429 (modelo {modelo_usar}): "
-                            f"{body[:500]}"
+                            f"{self.provider} HTTP 429 "
+                            f"(modelo {modelo_usar}): {body[:500]}"
                         )
 
                     if response.status in (401, 403):
                         self._cooldown_until = self._now() + 30
                         raise RuntimeError(
-                            f"Cerebras HTTP {response.status}: {body[:500]}"
+                            f"{self.provider} HTTP {response.status}: "
+                            f"{body[:500]}"
                         )
 
                     if response.status == 404:
                         raise RuntimeError(
-                            f"Cerebras HTTP 404 (modelo {modelo_usar}): "
-                            f"{body[:500]}"
+                            f"{self.provider} HTTP 404 "
+                            f"(modelo {modelo_usar}): {body[:500]}"
                         )
 
                     if response.status == 413:
                         raise RuntimeError(
-                            f"Cerebras HTTP 413 (petición demasiado grande): "
-                            f"{body[:500]}"
+                            f"{self.provider} HTTP 413 "
+                            f"(petición demasiado grande): {body[:500]}"
+                        )
+
+                    if response.status == 402:
+                        raise RuntimeError(
+                            f"{self.provider} HTTP 402 "
+                            f"(requiere pago): {body[:500]}"
                         )
 
                     if response.status >= 500:
                         raise RuntimeError(
-                            f"Cerebras HTTP {response.status} "
+                            f"{self.provider} HTTP {response.status} "
                             f"(modelo {modelo_usar}): {body[:500]}"
                         )
 
@@ -118,17 +154,18 @@ class AIConnector:
                             return json.loads(body)
                         except json.JSONDecodeError as exc:
                             raise RuntimeError(
-                                f"Respuesta inválida de Cerebras: {body[:300]}"
+                                f"Respuesta inválida de {self.provider}: "
+                                f"{body[:300]}"
                             ) from exc
 
                     raise RuntimeError(
-                        f"Cerebras HTTP {response.status} "
+                        f"{self.provider} HTTP {response.status} "
                         f"(modelo {modelo_usar}): {body[:500]}"
                     )
 
             except aiohttp.ClientError as exc:
                 raise RuntimeError(
-                    f"Error de conexión con Cerebras: {exc}"
+                    f"Error de conexión con {self.provider}: {exc}"
                 ) from exc
 
     def clean_tool_result(self, result: Any) -> str:
