@@ -198,6 +198,16 @@ class AIConnector:
     ) -> dict:
         provider, base_url = detect_provider(slot.key)
 
+        # ============================================================
+        # GEMINI: quitar tools
+        # El endpoint OpenAI-compatible de Google no soporta tool calling
+        # sin thought_signature. Quitamos las tools cuando es Gemini.
+        # ============================================================
+        if provider == "gemini":
+            payload = dict(payload)
+            payload.pop("tools", None)
+            payload.pop("tool_choice", None)
+
         async with session.post(
             f"{base_url}/chat/completions",
             headers={
