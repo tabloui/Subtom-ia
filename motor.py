@@ -13,7 +13,7 @@ from typing import Any
 import aiohttp
 
 from config import config
-from connector import connector
+from connector import connector, detect_provider
 
 
 class TaskType(str, Enum):
@@ -590,58 +590,76 @@ class Motor:
                 except Exception as exc:
                     results[url] = f"err:{type(exc).__name__}"
 
-            api_headers = {
-                "Authorization": f"Bearer {config.ai_api_key}",
-            }
+            tasks = []
 
-            await asyncio.gather(
-                ping(f"{connector.base_url}/models", api_headers),
-                ping(config.flux_base_url.rstrip("/")),
-                ping("https://html.duckduckgo.com/html/"),
-                return_exceptions=True,
-            )
+            for slot in config.ai_slots:
+                provider, base_url = detect_provider(slot.key)
+                tasks.append(
+                    ping(
+                        f"{base_url}/models",
+                        {"Authorization": f"Bearer {slot.key}"},
+                    )
+                )
+
+            tasks.append(ping(config.flux_base_url.rstrip("/")))
+            tasks.append(ping("https://html.duckduckgo.com/html/"))
+
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         print(
-            f"[MOTOR] prewarm ({connector.provider}) → {results}"
+            f"[MOTOR] prewarm ({len(config.ai_slots)} slots) → {results}"
         )
 
     async def healthcheck_loop(self, interval: float = 300.0) -> None:
         while True:
             try:
                 await asyncio.sleep(interval)
-                headers = {
-                    "Authorization": f"Bearer {config.ai_api_key}",
-                }
-                async with aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as s:
-                    async with s.get(
-                        f"{connector.base_url}/models",
-                        headers=headers,
-                    ) as r:
-                        if r.status == 200:
-                            data = await r.json(content_type=None)
-                            items = data.get("data") if isinstance(data, dict) else None
-                            if isinstance(items, list):
-                                alive = {
-                                    m["id"]
-                                    for m in items
-                                    if isinstance(m, dict) and m.get("id")
-                                }
-                                for m in list(self.breaker._open_until):
-                                    if m.startswith("model:"):
-                                        mid = m.split(":", 1)[1]
-                                        if mid in alive:
-                                            self.breaker.reset(m)
-                                print(
-                                    f"[MOTOR] healthcheck "
-                                    f"{connector.provider} ok, "
-                                    f"{len(alive)} modelos disponibles"
-                                )
+
+                for slot in config.ai_slots:
+                    provider, base_url = detect_provider(slot.key)
+                    try:
+                        async with aiohttp.ClientSession(
+                            timeout=aiohttp.ClientTimeout(total=15)
+                        ) as s:
+                            async with s.get(
+                                f"{base_url}/models",
+                                headers={
+                                    "Authorization": f"Bearer {slot.key}"
+                                },
+                            ) as r:
+                                if r.status == 200:
+                                    data = await r.json(content_type=None)
+                                    items = (
+                                        data.get("data")
+                                        if isinstance(data, dict)
+                                        else None
+                                    )
+                                    if isinstance(items, list):
+                                        alive = {
+                                            m["id"]
+                                            for m in items
+                                            if isinstance(m, dict) and m.get("id")
+                                        }
+                                        for m in list(self.breaker._open_until):
+                                            if m.startswith("model:"):
+                                                mid = m.split(":", 1)[1]
+                                                if mid in alive:
+                                                    self.breaker.reset(m)
+                                        print(
+                                            f"[MOTOR] healthcheck "
+                                            f"#{slot.index} {provider} ok, "
+                                            f"{len(alive)} modelos"
+                                        )
+                    except Exception as exc:
+                        print(
+                            f"[MOTOR] healthcheck #{slot.index} "
+                            f"{provider} err: {exc}"
+                        )
+
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                print(f"[MOTOR] healthcheck err: {exc}")
+                print(f"[MOTOR] healthcheck loop err: {exc}")
 
     def start_healthcheck(self, interval: float = 300.0) -> None:
         if self._health_task is None or self._health_task.done():
