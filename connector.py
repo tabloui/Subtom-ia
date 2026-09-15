@@ -42,7 +42,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
         return "openrouter", "https://openrouter.ai/api/v1"
     if key.startswith("xai-"):
         return "xai", "https://api.x.ai/v1"
-    if key.startswith("AQ.") or key.startswith("AIza"):
+    if key.startswith("AI.") or key.startswith("AIza"):
         return "gemini", "https://generativelanguage.googleapis.com/v1beta/openai"
     if key.startswith("csk-"):
         return "cerebras", "https://api.cerebras.ai/v1"
@@ -140,21 +140,18 @@ class AIConnector:
 
     def system_prompt(self) -> str:
         return (
-            "Eres Subtom IA, el asistente personal de programación de Amin. "
-            "Personalidad: amable, cercano, con humor seco y natural, sin exagerar. "
-            "Hablas español siempre. Eres conversador: cuando te preguntan algo, "
-            "respondes con contexto y detalle, no en una línea seca, pero sin irte por las ramas. "
-            "Si algo es simple, lo dices claro y rápido; si algo es complejo, lo explicas bien. "
-            "Tienes herramientas reales y puedes usarlas: "
-            "buscar en internet (web_search, web_fetch), leer y escribir archivos, "
-            "leer PDFs, ver y analizar imágenes, crear ZIPs, "
-            "gestionar GitHub (listar repos, leer y escribir archivos, crear issues, "
-            "pull requests, listar ramas, borrar archivos, buscar código), "
-            "gestionar Vercel (proyectos, deploys, variables de entorno), "
-            "generar imágenes con FLUX, y ejecutar código Python en un sandbox. "
-            "Úsalas cuando hagan falta, sin anunciarlas si no viene al caso. "
-            "Cuando veas una imagen, analízala de verdad: describe lo que ves con detalle. "
-            "Nunca inventes información. Si no sabes algo, lo buscas o lo dices. "
+            "Eres Subtom IA, el asistente personal de Amin. "
+            "Hablas siempre en español y eres súper amable, cálido y cercano, "
+            "como un buen amigo que sabe programar. "
+            "Te gusta conversar: das contexto, explicas con detalle, "
+            "y tus respuestas son largas y completas, nunca de una línea seca. "
+            "Usas un tono natural, con humor seco cuando encaja, sin exagerar con emojis. "
+            "Eres técnico cuando hace falta pero sin ser pedante. "
+            "Cuando el usuario te pide algo, lo haces bien y con ganas. "
+            "Tienes herramientas reales (web, archivos, GitHub, Vercel, imágenes, sandbox, Discord) "
+            "y las usas cuando toca. "
+            "No inventas información. "
+            "Si no sabes algo, lo dices o lo buscas. "
             "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
         )
 
@@ -188,7 +185,7 @@ class AIConnector:
         self._fail_count[slot.index] = self._fail_count.get(slot.index, 0) + 1
         forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
         provider, _ = detect_provider(slot.key, forced)
-        print(f"[CONNECTOR] #{slot.index} {provider} → {reason} "
+        print(f"[CONNECTOR] #{slot.index} {provider} ⚡ {reason} "
               f"(cd {cooldown:.0f}s, fallos: {self._fail_count[slot.index]})")
 
     def _mark_success(self, slot: AISlot) -> None:
@@ -316,7 +313,7 @@ class AIConnector:
         for slot in slots[start_index:]:
             payload = self._build_payload(slot, messages, tools, model)
             try:
-                result = await self._call_slot(slot, payload, session)
+                result = await asyncio.call_slot(slot, payload, session) if hasattr(asyncio, 'call_slot') else await self._call_slot(slot, payload, session)
                 if not tools:
                     self._cache.set(messages, cache_key_model, result)
                 return result
@@ -353,51 +350,3 @@ class AIConnector:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         return payload
-
-    def clean_tool_result(self, result: Any) -> str:
-        try:
-            if isinstance(result, str):
-                return result[:20000]
-            return json.dumps(result, ensure_ascii=False, default=str)[:20000]
-        except Exception:
-            return str(result)[:20000]
-
-    @property
-    def provider(self) -> str:
-        if config.ai_slots:
-            forced = os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}") if config.ai_slots[0].index > 0 else os.getenv("AI_PROVIDER")
-            p, _ = detect_provider(config.ai_slots[0].key, forced)
-            return p
-        return "none"
-
-    @property
-    def base_url(self) -> str:
-        if config.ai_slots:
-            forced = os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}") if config.ai_slots[0].index > 0 else os.getenv("AI_PROVIDER")
-            _, u = detect_provider(config.ai_slots[0].key, forced)
-            return u
-        return ""
-
-    def stats(self) -> dict[str, Any]:
-        now = self._now()
-        result = []
-        for slot in config.ai_slots:
-            forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
-            provider, _ = detect_provider(slot.key, forced)
-            cd = self._cooldowns.get(slot.index, 0)
-            result.append({
-                "slot": slot.index,
-                "provider": provider,
-                "model": slot.model,
-                "fallos": self._fail_count.get(slot.index, 0),
-                "cooldown_restante_s": max(0, round(cd - now, 1)),
-                "activo": now >= cd,
-            })
-        return {
-            "cursor_actual": self._cursor,
-            "cache": self._cache.stats(),
-            "slots": result,
-        }
-
-
-connector = AIConnector()
