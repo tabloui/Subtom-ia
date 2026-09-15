@@ -36,6 +36,12 @@ def detect_provider(key: str) -> tuple[str, str]:
     if key.startswith("nvapi-"):
         return "nvidia", "https://integrate.api.nvidia.com/v1"
 
+    if key.startswith("tgp_v1_"):
+        return "together", "https://api.together.xyz/v1"
+
+    if key.startswith("di_"):
+        return "deepinfra", "https://api.deepinfra.com/v1/openai"
+
     if key.startswith("sk-proj-") or key.startswith("sk-"):
         return "openai", "https://api.openai.com/v1"
 
