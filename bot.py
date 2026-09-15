@@ -11,6 +11,7 @@ import discord
 
 from ai import agent
 from config import config
+from connector import connector
 from motor import motor
 
 
@@ -36,7 +37,7 @@ async def health(_: web.Request) -> web.Response:
         {
             "ok": True,
             "service": config.bot_name,
-            "provider": "cerebras",
+            "provider": connector.provider,
             "model": config.ai_model,
         }
     )
@@ -44,7 +45,7 @@ async def health(_: web.Request) -> web.Response:
 
 async def root(_: web.Request) -> web.Response:
     return web.Response(
-        text=f"{config.bot_name} online (Cerebras)"
+        text=f"{config.bot_name} online ({connector.provider})"
     )
 
 
@@ -383,7 +384,7 @@ async def send_generated_image(
                     return
 
                 await chat.send(
-                    f"🖼️ Imagen generada: {image_url}"
+                    f"Imagen generada: {image_url}"
                 )
 
     except Exception as exc:
@@ -392,7 +393,7 @@ async def send_generated_image(
 
         try:
             await chat.send(
-                f"🖼️ Imagen generada: {image_url}"
+                f"Imagen generada: {image_url}"
             )
         except Exception:
             pass
@@ -407,7 +408,7 @@ async def on_ready() -> None:
 
     print(
         f"{config.bot_name} | "
-        f"proveedor=Cerebras | "
+        f"proveedor={connector.provider} | "
         f"modelo={config.ai_model}"
     )
 
