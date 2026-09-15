@@ -37,21 +37,27 @@ async def health(_: web.Request) -> web.Response:
         {
             "ok": True,
             "service": config.bot_name,
-            "provider": connector.provider,
-            "model": config.ai_model,
+            "slots": len(config.ai_slots),
+            "provider_principal": connector.provider,
+            "model_principal": config.ai_model,
         }
     )
 
 
 async def root(_: web.Request) -> web.Response:
     return web.Response(
-        text=f"{config.bot_name} online ({connector.provider})"
+        text=(
+            f"{config.bot_name} online | "
+            f"{len(config.ai_slots)} slots | "
+            f"principal: {connector.provider}"
+        )
     )
 
 
 async def metrics(_: web.Request) -> web.Response:
     try:
         data = motor.snapshot()
+        data["rotador"] = connector.stats()
     except Exception as exc:
         return web.json_response(
             {"error": f"{type(exc).__name__}: {exc}"},
@@ -408,8 +414,9 @@ async def on_ready() -> None:
 
     print(
         f"{config.bot_name} | "
-        f"proveedor={connector.provider} | "
-        f"modelo={config.ai_model}"
+        f"{len(config.ai_slots)} slots | "
+        f"principal: {connector.provider} | "
+        f"modelo: {config.ai_model}"
     )
 
 
