@@ -58,14 +58,8 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     return "openrouter", "https://openrouter.ai/api/v1"
 
 
-# ----------------------------------------------------------------------
-# Cache rápida de respuestas idénticas
-# ----------------------------------------------------------------------
-
 class FastCache:
-    """Cache LRU de respuestas para peticiones idénticas."""
-
-    def __init__(self, max_size: int = 100, ttl: float = 60.0):
+    def __init__(self, max_size: int = 150, ttl: float = 60.0):
         self.max_size = max_size
         self.ttl = ttl
         self._data: OrderedDict[str, tuple[float, dict]] = OrderedDict()
@@ -100,16 +94,11 @@ class FastCache:
             self._data.popitem(last=False)
 
     def stats(self) -> dict:
-        return {
-            "hits": self.hits,
-            "misses": self.misses,
-            "size": len(self._data),
-        }
+        return {"hits": self.hits, "misses": self.misses, "size": len(self._data)}
 
 
 class AIConnector:
 
-    # Timeout por petición (no por slot global)
     REQUEST_TIMEOUT = 25.0
 
     def __init__(self) -> None:
@@ -127,14 +116,10 @@ class AIConnector:
             provider, _ = detect_provider(slot.key, forced)
             print(f"  #{slot.index}: {provider} | {slot.model}")
 
-    # ------------------------------------------------------------------
-    # Sesión HTTP persistente (reutiliza conexiones TLS)
-    # ------------------------------------------------------------------
-
     async def _get_session(self) -> aiohttp.ClientSession:
         async with self._session_lock:
             if self._session is None or self._session.closed:
-                connector = aiohttp.TCPConnector(
+                tcp = aiohttp.TCPConnector(
                     limit=20,
                     limit_per_host=10,
                     ttl_dns_cache=300,
@@ -143,7 +128,7 @@ class AIConnector:
                 )
                 self._session = aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT),
-                    connector=connector,
+                    connector=tcp,
                 )
             return self._session
 
@@ -153,16 +138,24 @@ class AIConnector:
                 await self._session.close()
                 self._session = None
 
-    # ------------------------------------------------------------------
-    # System prompt
-    # ------------------------------------------------------------------
-
     def system_prompt(self) -> str:
         return (
-            "Subtom IA de Amin. Amable, gracioso, cercano. "
-            "Sin exceso de emojis. Español. Directo y conciso. "
-            "Tienes herramientas (web, archivos, GitHub, Vercel, "
-            "imágenes, sandbox); úsalas cuando hagan falta. No inventes."
+            "Eres Subtom IA, el asistente personal de programación de Amin. "
+            "Personalidad: amable, cercano, con humor seco y natural, sin exagerar. "
+            "Hablas español siempre. Eres conversador: cuando te preguntan algo, "
+            "respondes con contexto y detalle, no en una línea seca, pero sin irte por las ramas. "
+            "Si algo es simple, lo dices claro y rápido; si algo es complejo, lo explicas bien. "
+            "Tienes herramientas reales y puedes usarlas: "
+            "buscar en internet (web_search, web_fetch), leer y escribir archivos, "
+            "leer PDFs, ver y analizar imágenes, crear ZIPs, "
+            "gestionar GitHub (listar repos, leer y escribir archivos, crear issues, "
+            "pull requests, listar ramas, borrar archivos, buscar código), "
+            "gestionar Vercel (proyectos, deploys, variables de entorno), "
+            "generar imágenes con FLUX, y ejecutar código Python en un sandbox. "
+            "Úsalas cuando hagan falta, sin anunciarlas si no viene al caso. "
+            "Cuando veas una imagen, analízala de verdad: describe lo que ves con detalle. "
+            "Nunca inventes información. Si no sabes algo, lo buscas o lo dices. "
+            "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
         )
 
     @staticmethod
@@ -172,28 +165,21 @@ class AIConnector:
         except RuntimeError:
             return time.monotonic()
 
-    # ------------------------------------------------------------------
-    # Selección de slots
-    # ------------------------------------------------------------------
-
     def _available_slots(self) -> list[AISlot]:
         now = self._now()
         total = len(config.ai_slots)
         if total == 0:
             return []
-
         available: list[AISlot] = []
         for offset in range(total):
             i = (self._cursor + offset) % total
             slot = config.ai_slots[i]
             if now >= self._cooldowns.get(slot.index, 0):
                 available.append(slot)
-
         if not available:
             print("[CONNECTOR] Todos en cooldown. Reseteando.")
             self._cooldowns.clear()
             available = list(config.ai_slots)
-
         available.sort(key=lambda s: self._fail_count.get(s.index, 0))
         return available
 
@@ -213,10 +199,6 @@ class AIConnector:
             provider, _ = detect_provider(slot.key, forced)
             print(f"[CONNECTOR] Usando slot #{slot.index} ({provider})")
             self._last_used = slot.index
-
-    # ------------------------------------------------------------------
-    # Petición a un slot concreto
-    # ------------------------------------------------------------------
 
     async def _call_slot(
         self,
@@ -263,10 +245,6 @@ class AIConnector:
             self._mark_failure(slot, 60, f"{response.status}")
             raise RuntimeError(f"{provider} {response.status}: {body[:200]}")
 
-    # ------------------------------------------------------------------
-    # Complete con RACE entre los 2 primeros slots
-    # ------------------------------------------------------------------
-
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -278,12 +256,11 @@ class AIConnector:
         if not has_system:
             messages = [{"role": "system", "content": self.system_prompt()}, *messages]
 
-        # Cache hit → respuesta instantánea
         cache_key_model = model or (config.ai_slots[0].model if config.ai_slots else "")
-        if not tools:  # Solo cachear cuando NO hay tools (las tools tienen efectos)
+        if not tools:
             cached = self._cache.get(messages, cache_key_model)
             if cached is not None:
-                print("[CONNECTOR] ⚡ Cache hit")
+                print("[CONNECTOR] Cache hit")
                 return cached
 
         slots = self._available_slots()
@@ -293,9 +270,7 @@ class AIConnector:
         session = await self._get_session()
         last_error: Exception | None = None
 
-        # -------------------------------------------------------------
-        # FASE 1: RACE entre los 2 primeros slots (el más rápido gana)
-        # -------------------------------------------------------------
+        # Fase 1: race entre los 2 primeros
         if len(slots) >= 2:
             first_two = slots[:2]
             tasks = []
@@ -311,12 +286,10 @@ class AIConnector:
                     timeout=self.REQUEST_TIMEOUT,
                 )
 
-                # Cancelar las pendientes
                 for _, t in tasks:
                     if not t.done():
                         t.cancel()
 
-                # Primer resultado exitoso
                 for slot, t in tasks:
                     if t.done() and not t.cancelled() and t.exception() is None:
                         result = t.result()
@@ -326,7 +299,6 @@ class AIConnector:
                     elif t.done() and t.exception() is not None:
                         last_error = t.exception()
 
-                # Ninguna terminó con éxito → continuar con siguientes
                 for _, t in tasks:
                     try:
                         t.cancel()
@@ -339,9 +311,7 @@ class AIConnector:
                         t.cancel()
                 last_error = RuntimeError("Race timeout")
 
-        # -------------------------------------------------------------
-        # FASE 2: Probar el resto de slots en secuencia
-        # -------------------------------------------------------------
+        # Fase 2: resto en secuencia
         start_index = 2 if len(slots) >= 2 else 0
         for slot in slots[start_index:]:
             payload = self._build_payload(slot, messages, tools, model)
@@ -383,10 +353,6 @@ class AIConnector:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         return payload
-
-    # ------------------------------------------------------------------
-    # Utilidades
-    # ------------------------------------------------------------------
 
     def clean_tool_result(self, result: Any) -> str:
         try:
