@@ -42,8 +42,8 @@ class Settings:
     # Database
     database_url: str
 
-    # Cerebras
-    cerebras_api_key: str
+    # IA (cualquier proveedor)
+    ai_api_key: str
     ai_model: str
     ai_temperature: float
     ai_max_tokens: int
@@ -96,8 +96,8 @@ def load_settings() -> Settings:
     # --- DATABASE ---
     database_url = _required("DATABASE_URL")
 
-    # --- CEREBRAS ---
-    cerebras_api_key = _required("CEREBRAS_API_KEY")
+    # --- IA (clave del proveedor) ---
+    ai_api_key = _required("AI_API_KEY")
 
     # --- TEMPERATURA ---
     temperature_raw = _env("AI_TEMPERATURE", "0.7")
@@ -109,32 +109,35 @@ def load_settings() -> Settings:
         raise RuntimeError("AI_TEMPERATURE debe estar entre 0 y 2")
 
     # --- MODELO ---
-    ai_model = _env("AI_MODEL", "gemma-4-31b")
+    ai_model = _env("AI_MODEL", "qwen/qwen3.6-27b")
 
     # --- SETTINGS ---
     return Settings(
+        # Discord
         discord_token=discord_token,
         allowed_user_id=allowed_user_id,
+
+        # Database
         database_url=database_url,
 
-        cerebras_api_key=cerebras_api_key,
+        # IA
+        ai_api_key=ai_api_key,
         ai_model=ai_model,
         ai_temperature=ai_temperature,
         ai_max_tokens=_int("AI_MAX_TOKENS", 5000, 256, 16000),
         ai_max_tool_rounds=_int("MAX_TOOL_ROUNDS", 10, 1, 30),
         ai_timeouts_seconds=_int("AI_TIMEOUT_SECONDS", 90, 10, 300),
 
+        # Bot
         bot_name=_env("BOT_NAME", "Subtom"),
         bot_language=_env("BOT_LANGUAGE", "español"),
         bot_personality=_env(
             "BOT_PERSONALITY",
-            "profesional, chistoso, no frío, rápido, preciso, "
-            "da sugerencias, muestra errores y analiza mucho",
+            "amable, gracioso, cercano, directo y conciso",
         ),
         bot_style=_env(
             "BOT_STYLE",
-            "profesional y chistoso a la vez, nada frío, "
-            "rápido, preciso, sugiere mejoras, señala errores",
+            "cercano y directo, sin exceso de emojis",
         ),
         bot_system_text=_env("BOT_SYSTEM_TEXT", ""),
         bot_creator=_env("BOT_CREATOR", "Amin"),
@@ -150,18 +153,23 @@ def load_settings() -> Settings:
             "mi código antes",
         ),
 
+        # Usuario
         user_name=_env("USER_NAME", "Amin"),
         user_description=_env("USER_DESCRIPTION", "Amin, un programador"),
 
+        # Memory
         memory_limit=_int("MEMORY_LIMIT", 30, 0, 10080),
         memory_messages=_int("MEMORY_MESSAGES", 20, 4, 200),
 
+        # Server
         workspace=_env("SUBTOM_WORKSPACE", "./workspace"),
         port=_int("PORT", 3000, 1, 65535),
 
+        # Optional APIs
         github_token=_env("GITHUB_TOKEN"),
         vercel_token=_env("VERCEL_TOKEN"),
 
+        # FLUX
         flux_api_key_1=_env("FLUX_API_KEY_1"),
         flux_api_key_2=_env("FLUX_API_KEY_2"),
         flux_base_url=_env("FLUX_BASE_URL", "https://api.bfl.ai/v1"),
