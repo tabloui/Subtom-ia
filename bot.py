@@ -9,6 +9,7 @@ from aiohttp import web
 
 import discord
 
+import discord_tools
 from ai import agent
 from config import config
 from connector import connector
@@ -22,10 +23,14 @@ from motor import motor
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
+intents.members = True
 
 client = discord.Client(
     intents=intents
 )
+
+# Conectar el cliente con las herramientas de Discord
+discord_tools.set_client(client)
 
 
 # ============================================================
@@ -242,6 +247,7 @@ def build_user_context(
         f"- Nombre de usuario: {user.name}",
         f"- ID: {user.id}",
         f"- Avatar: {user.display_avatar.url}",
+        f"- Canal ID actual: {message.channel.id}",
     ]
 
     if message.guild:
@@ -260,7 +266,6 @@ def build_user_context(
     if isinstance(message.channel, discord.TextChannel):
 
         lines.append(f"- Canal: #{message.channel.name}")
-        lines.append(f"- Canal ID: {message.channel.id}")
 
         if message.channel.topic:
             lines.append(
@@ -329,6 +334,8 @@ async def send_files(
     files: list,
 ) -> None:
 
+    valid: list[discord.File] = []
+
     for item in files:
 
         try:
@@ -338,7 +345,7 @@ async def send_files(
                 path = Path(item)
 
                 if path.exists():
-                    await chat.send(file=discord.File(path))
+                    valid.append(discord.File(path))
 
             elif (
                 isinstance(item, tuple)
@@ -348,9 +355,8 @@ async def send_files(
                 name, data = item
 
                 if isinstance(data, bytes):
-
-                    await chat.send(
-                        file=discord.File(
+                    valid.append(
+                        discord.File(
                             io.BytesIO(data),
                             filename=name,
                         )
@@ -358,11 +364,19 @@ async def send_files(
 
         except Exception as exc:
 
-            print(f"Error enviando archivo: {exc}")
+            print(f"Error preparando archivo: {exc}")
+
+    # Enviar en lotes de 10 (límite de Discord)
+    for i in range(0, len(valid), 10):
+        batch = valid[i:i + 10]
+        try:
+            await chat.send(files=batch)
+        except Exception as exc:
+            print(f"Error enviando lote: {exc}")
 
 
 # ============================================================
-# IMAGEN GENERADA (descarga y reenvía)
+# IMAGEN GENERADA
 # ============================================================
 
 async def send_generated_image(
@@ -523,6 +537,8 @@ async def main() -> None:
         print("Cerrando Subtom...")
 
         motor.stop_healthcheck()
+
+        await connector.close()
 
         await agent.close()
 
