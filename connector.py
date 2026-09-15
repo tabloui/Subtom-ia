@@ -13,25 +13,7 @@ import aiohttp
 from config import config, AISlot
 
 
-def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
-    if forced:
-        forced = forced.lower().strip()
-        mapping = {
-            "ollama": ("ollama", "https://ollama.com/v1"),
-            "together": ("together", "https://api.together.xyz/v1"),
-            "deepinfra": ("deepinfra", "https://api.deepinfra.com/v1/openai"),
-            "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
-            "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
-            "gemini": ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
-            "groq": ("groq", "https://api.groq.com/openai/v1"),
-            "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
-            "openai": ("openai", "https://api.openai.com/v1"),
-            "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
-            "xai": ("xai", "https://api.x.ai/v1"),
-        }
-        if forced in mapping:
-            return mapping[forced]
-
+def detect_provider(key: str) -> tuple[str, str]:
     key = (key or "").strip()
 
     if key.startswith("gsk_"):
@@ -42,7 +24,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
         return "openrouter", "https://openrouter.ai/api/v1"
     if key.startswith("xai-"):
         return "xai", "https://api.x.ai/v1"
-    if key.startswith("AI.") or key.startswith("AIza"):
+    if key.startswith("AQ.") or key.startswith("AIza"):
         return "gemini", "https://generativelanguage.googleapis.com/v1beta/openai"
     if key.startswith("csk-"):
         return "cerebras", "https://api.cerebras.ai/v1"
@@ -69,7 +51,9 @@ class FastCache:
     @staticmethod
     def _key(messages: list[dict], model: str) -> str:
         raw = json.dumps([messages, model], sort_keys=True, default=str)
-        return hashlib.blake2b(raw.encode("utf-8", "ignore"), digest_size=16).hexdigest()
+        return hashlib.blake2b(
+            raw.encode("utf-8", "ignore"), digest_size=16
+        ).hexdigest()
 
     def get(self, messages: list[dict], model: str) -> dict | None:
         k = self._key(messages, model)
@@ -99,7 +83,7 @@ class FastCache:
 
 class AIConnector:
 
-    REQUEST_TIMEOUT = 25.0
+    REQUEST_TIMEOUT = 45.0
 
     def __init__(self) -> None:
         self._cooldowns: dict[int, float] = {}
@@ -112,8 +96,7 @@ class AIConnector:
 
         print(f"[CONNECTOR] {len(config.ai_slots)} slots configurados:")
         for slot in config.ai_slots:
-            forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
-            provider, _ = detect_provider(slot.key, forced)
+            provider, _ = detect_provider(slot.key)
             print(f"  #{slot.index}: {provider} | {slot.model}")
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -140,18 +123,31 @@ class AIConnector:
 
     def system_prompt(self) -> str:
         return (
-            "Eres Subtom IA, el asistente personal de Amin. "
-            "Hablas siempre en español y eres súper amable, cálido y cercano, "
-            "como un buen amigo que sabe programar. "
-            "Te gusta conversar: das contexto, explicas con detalle, "
-            "y tus respuestas son largas y completas, nunca de una línea seca. "
-            "Usas un tono natural, con humor seco cuando encaja, sin exagerar con emojis. "
-            "Eres técnico cuando hace falta pero sin ser pedante. "
-            "Cuando el usuario te pide algo, lo haces bien y con ganas. "
-            "Tienes herramientas reales (web, archivos, GitHub, Vercel, imágenes, sandbox, Discord) "
-            "y las usas cuando toca. "
-            "No inventas información. "
-            "Si no sabes algo, lo dices o lo buscas. "
+            "Eres Subtom IA, el asistente personal de Amin. Hablas siempre en español y eres "
+            "súper amable, cálido y cercano, como un buen amigo que sabe programar. Te gusta "
+            "conversar: das contexto, explicas con detalle, y tus respuestas son largas y "
+            "completas, nunca de una línea seca. Usas un tono natural, con humor seco cuando "
+            "encaja, sin exagerar con emojis. Eres técnico cuando hace falta pero sin ser "
+            "pedante. Cuando el usuario te pide algo, lo haces bien y con ganas.\n\n"
+            "Tienes herramientas reales y las usas cuando toca:\n"
+            "- web_search y web_fetch para buscar y leer internet\n"
+            "- file_read, file_write, file_tree, file_grep y demás para archivos\n"
+            "- file_read_pdf para PDFs, file_count_words, file_stats\n"
+            "- github_* para gestionar repos, issues, PRs, branches, commits, archivos\n"
+            "- vercel_* para proyectos, deploys, envs\n"
+            "- sandbox_run_python, sandbox_run_shell, sandbox_run_node para ejecutar código\n"
+            "- generate_image para generar imágenes con FLUX\n"
+            "- discord_* para mensajes, encuestas, DMs, moderación, roles, canales\n"
+            "- discord_send_file para enviar archivos al chat\n\n"
+            "Cuando escribas código, que sea completo y funcional, no fragmentos. "
+            "Si ves un problema, dilo con claridad. Si algo es buena idea, reconócelo. "
+            "Nunca inventes información. Si no sabes algo, lo buscas o lo dices.\n\n"
+            "REGLA CRÍTICA DE AUTO-MODIFICACIÓN: cuando modifiques tu propio código "
+            "(connector.py, bot.py, ai.py, motor.py, config.py, file_tools.py, sandbox.py), "
+            "lee el archivo completo con github_read, escríbelo entero en local con file_write, "
+            "verifica con sandbox_run_python usando py_compile que compila sin errores, "
+            "y compara el número de líneas con el original. Solo si TODO está OK, sube con "
+            "github_write. Si tienes dudas, para y pregunta.\n\n"
             "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
         )
 
@@ -183,28 +179,24 @@ class AIConnector:
     def _mark_failure(self, slot: AISlot, cooldown: float, reason: str) -> None:
         self._cooldowns[slot.index] = self._now() + cooldown
         self._fail_count[slot.index] = self._fail_count.get(slot.index, 0) + 1
-        forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
-        provider, _ = detect_provider(slot.key, forced)
-        print(f"[CONNECTOR] #{slot.index} {provider} ⚡ {reason} "
-              f"(cd {cooldown:.0f}s, fallos: {self._fail_count[slot.index]})")
+        provider, _ = detect_provider(slot.key)
+        print(
+            f"[CONNECTOR] #{slot.index} {provider} → {reason} "
+            f"(cd {cooldown:.0f}s, fallos: {self._fail_count[slot.index]})"
+        )
 
     def _mark_success(self, slot: AISlot) -> None:
         self._cursor = slot.index
         self._fail_count[slot.index] = 0
         if self._last_used != slot.index:
-            forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
-            provider, _ = detect_provider(slot.key, forced)
+            provider, _ = detect_provider(slot.key)
             print(f"[CONNECTOR] Usando slot #{slot.index} ({provider})")
             self._last_used = slot.index
 
     async def _call_slot(
-        self,
-        slot: AISlot,
-        payload: dict,
-        session: aiohttp.ClientSession,
+        self, slot: AISlot, payload: dict, session: aiohttp.ClientSession,
     ) -> dict:
-        forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
-        provider, base_url = detect_provider(slot.key, forced)
+        provider, base_url = detect_provider(slot.key)
 
         async with session.post(
             f"{base_url}/chat/completions",
@@ -251,9 +243,14 @@ class AIConnector:
 
         has_system = any(m.get("role") == "system" for m in messages)
         if not has_system:
-            messages = [{"role": "system", "content": self.system_prompt()}, *messages]
+            messages = [
+                {"role": "system", "content": self.system_prompt()},
+                *messages,
+            ]
 
-        cache_key_model = model or (config.ai_slots[0].model if config.ai_slots else "")
+        cache_key_model = model or (
+            config.ai_slots[0].model if config.ai_slots else ""
+        )
         if not tools:
             cached = self._cache.get(messages, cache_key_model)
             if cached is not None:
@@ -273,7 +270,9 @@ class AIConnector:
             tasks = []
             for slot in first_two:
                 payload = self._build_payload(slot, messages, tools, model)
-                task = asyncio.create_task(self._call_slot(slot, payload, session))
+                task = asyncio.create_task(
+                    self._call_slot(slot, payload, session)
+                )
                 tasks.append((slot, task))
 
             try:
@@ -313,7 +312,7 @@ class AIConnector:
         for slot in slots[start_index:]:
             payload = self._build_payload(slot, messages, tools, model)
             try:
-                result = await asyncio.call_slot(slot, payload, session) if hasattr(asyncio, 'call_slot') else await self._call_slot(slot, payload, session)
+                result = await self._call_slot(slot, payload, session)
                 if not tools:
                     self._cache.set(messages, cache_key_model, result)
                 return result
@@ -350,3 +349,50 @@ class AIConnector:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         return payload
+
+    def clean_tool_result(self, result: Any) -> str:
+        try:
+            if isinstance(result, str):
+                return result[:20000]
+            return json.dumps(
+                result, ensure_ascii=False, default=str
+            )[:20000]
+        except Exception:
+            return str(result)[:20000]
+
+    @property
+    def provider(self) -> str:
+        if config.ai_slots:
+            p, _ = detect_provider(config.ai_slots[0].key)
+            return p
+        return "none"
+
+    @property
+    def base_url(self) -> str:
+        if config.ai_slots:
+            _, u = detect_provider(config.ai_slots[0].key)
+            return u
+        return ""
+
+    def stats(self) -> dict[str, Any]:
+        now = self._now()
+        result = []
+        for slot in config.ai_slots:
+            provider, _ = detect_provider(slot.key)
+            cd = self._cooldowns.get(slot.index, 0)
+            result.append({
+                "slot": slot.index,
+                "provider": provider,
+                "model": slot.model,
+                "fallos": self._fail_count.get(slot.index, 0),
+                "cooldown_restante_s": max(0, round(cd - now, 1)),
+                "activo": now >= cd,
+            })
+        return {
+            "cursor_actual": self._cursor,
+            "cache": self._cache.stats(),
+            "slots": result,
+        }
+
+
+connector = AIConnector()
