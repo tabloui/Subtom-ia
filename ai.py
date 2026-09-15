@@ -84,10 +84,7 @@ class Agent:
             config.memory_limit,
         )
 
-    async def save(
-        self, user_id: int, channel_id: int,
-        role: str, content: str,
-    ) -> None:
+    async def save(self, user_id: int, channel_id: int, role: str, content: str) -> None:
         if not self.pool:
             return
         await self.pool.execute(
@@ -98,9 +95,7 @@ class Agent:
             user_id, channel_id, role, content[:30000],
         )
 
-    async def history(
-        self, user_id: int, channel_id: int,
-    ) -> list[dict[str, Any]]:
+    async def history(self, user_id: int, channel_id: int) -> list[dict[str, Any]]:
         if not self.pool:
             return []
         rows = await self.pool.fetch(
@@ -133,9 +128,7 @@ class Agent:
                 unique.append(p)
         return unique
 
-    def _build_multimodal_content(
-        self, prompt: str, image_paths: list[str],
-    ) -> list[dict[str, Any]]:
+    def _build_multimodal_content(self, prompt: str, image_paths: list[str]) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for path in image_paths:
             try:
@@ -157,9 +150,7 @@ class Agent:
                 })
         return content
 
-    def _select_model(
-        self, prompt: str, task: TaskType, force_image: bool = False,
-    ) -> list[str]:
+    def _select_model(self, prompt: str, task: TaskType, force_image: bool = False) -> list[str]:
         return [config.ai_model]
 
     def tool_schemas(self) -> list[dict[str, Any]]:
@@ -350,7 +341,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_create_issue",
-                "description": "Crea un issue en un repositorio.",
+                "description": "Crea un issue.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "title": {"type": "string"},
@@ -401,7 +392,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_delete_branch",
-                "description": "Elimina una rama de un repositorio.",
+                "description": "Elimina una rama.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "branch": {"type": "string"},
@@ -417,7 +408,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_list_commits",
-                "description": "Historial de commits de un repositorio.",
+                "description": "Historial de commits.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "branch": {"type": "string", "default": "main"},
@@ -425,7 +416,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_get_file",
-                "description": "Obtiene un archivo con sus metadatos.",
+                "description": "Obtiene un archivo con metadatos.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "path": {"type": "string"},
@@ -462,7 +453,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_star_repo",
-                "description": "Marca un repositorio con estrella.",
+                "description": "Marca un repo con estrella.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                 }, "required": ["repo"]},
@@ -490,7 +481,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "vercel_set_env",
-                "description": "Configura una variable de entorno en Vercel.",
+                "description": "Configura una variable de entorno.",
                 "parameters": {"type": "object", "properties": {
                     "project": {"type": "string"},
                     "key": {"type": "string"},
@@ -509,7 +500,7 @@ class Agent:
             # ============ IMAGEN ============
             {"type": "function", "function": {
                 "name": "generate_image",
-                "description": "Genera una imagen con FLUX desde un prompt.",
+                "description": "Genera una imagen con FLUX.",
                 "parameters": {"type": "object", "properties": {
                     "prompt": {"type": "string"},
                 }, "required": ["prompt"]},
@@ -518,14 +509,14 @@ class Agent:
             # ============ SANDBOX ============
             {"type": "function", "function": {
                 "name": "sandbox_run_python",
-                "description": "Ejecuta código Python en un sandbox aislado.",
+                "description": "Ejecuta código Python en sandbox.",
                 "parameters": {"type": "object", "properties": {
                     "code": {"type": "string"},
                 }, "required": ["code"]},
             }},
             {"type": "function", "function": {
                 "name": "sandbox_run_shell",
-                "description": "Ejecuta un comando shell en un sandbox.",
+                "description": "Ejecuta un comando shell en sandbox.",
                 "parameters": {"type": "object", "properties": {
                     "command": {"type": "string"},
                 }, "required": ["command"]},
@@ -553,14 +544,14 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "sandbox_analyze_json",
-                "description": "Analiza un JSON y devuelve su estructura.",
+                "description": "Analiza un JSON.",
                 "parameters": {"type": "object", "properties": {
                     "json_str": {"type": "string"},
                 }, "required": ["json_str"]},
             }},
             {"type": "function", "function": {
                 "name": "sandbox_regex_test",
-                "description": "Prueba una regex contra un texto.",
+                "description": "Prueba una regex.",
                 "parameters": {"type": "object", "properties": {
                     "pattern": {"type": "string"},
                     "text": {"type": "string"},
@@ -586,7 +577,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "sandbox_ocr_image",
-                "description": "Extrae texto de una imagen con OCR.",
+                "description": "OCR de una imagen.",
                 "parameters": {"type": "object", "properties": {
                     "path": {"type": "string"},
                     "lang": {"type": "string", "default": "spa+eng"},
@@ -601,7 +592,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "sandbox_git_clone",
-                "description": "Clona un repositorio de Git.",
+                "description": "Clona un repositorio.",
                 "parameters": {"type": "object", "properties": {
                     "repo_url": {"type": "string"},
                     "dest": {"type": "string"},
@@ -615,11 +606,20 @@ class Agent:
                     "output": {"type": "string"},
                 }, "required": ["url", "output"]},
             }},
+            {"type": "function", "function": {
+                "name": "sandbox_verify_change",
+                "description": "Verifica un cambio en un archivo Python antes de subirlo.",
+                "parameters": {"type": "object", "properties": {
+                    "file_path": {"type": "string"},
+                    "old_content": {"type": "string"},
+                    "new_content": {"type": "string"},
+                }, "required": ["file_path", "old_content", "new_content"]},
+            }},
 
             # ============ DISCORD ============
             {"type": "function", "function": {
                 "name": "discord_send_message",
-                "description": "Envía un mensaje a un canal de Discord.",
+                "description": "Envía un mensaje a un canal.",
                 "parameters": {"type": "object", "properties": {
                     "channel_id": {"type": "integer"},
                     "content": {"type": "string"},
@@ -628,7 +628,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_create_poll",
-                "description": "Crea una encuesta nativa de Discord.",
+                "description": "Crea una encuesta.",
                 "parameters": {"type": "object", "properties": {
                     "channel_id": {"type": "integer"},
                     "question": {"type": "string"},
@@ -638,7 +638,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_send_dm",
-                "description": "Envía un mensaje directo a un usuario.",
+                "description": "Envía un DM a un usuario.",
                 "parameters": {"type": "object", "properties": {
                     "user_id": {"type": "integer"},
                     "content": {"type": "string"},
@@ -646,7 +646,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_purge",
-                "description": "Borra los últimos N mensajes de un canal.",
+                "description": "Borra los últimos N mensajes.",
                 "parameters": {"type": "object", "properties": {
                     "channel_id": {"type": "integer"},
                     "amount": {"type": "integer", "default": 10},
@@ -655,7 +655,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_ban",
-                "description": "Banea a un usuario del servidor.",
+                "description": "Banea a un usuario.",
                 "parameters": {"type": "object", "properties": {
                     "user_id": {"type": "integer"},
                     "reason": {"type": "string"},
@@ -664,7 +664,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_kick",
-                "description": "Expulsa a un usuario del servidor.",
+                "description": "Expulsa a un usuario.",
                 "parameters": {"type": "object", "properties": {
                     "user_id": {"type": "integer"},
                     "reason": {"type": "string"},
@@ -707,7 +707,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_create_channel",
-                "description": "Crea un canal (text, voice, category, forum).",
+                "description": "Crea un canal.",
                 "parameters": {"type": "object", "properties": {
                     "name": {"type": "string"},
                     "channel_type": {"type": "string", "default": "text"},
@@ -724,7 +724,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_edit_channel",
-                "description": "Edita nombre, tema o slowmode de un canal.",
+                "description": "Edita un canal.",
                 "parameters": {"type": "object", "properties": {
                     "channel_id": {"type": "integer"},
                     "name": {"type": "string"},
@@ -734,7 +734,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_create_invite",
-                "description": "Crea una invitación a un canal.",
+                "description": "Crea una invitación.",
                 "parameters": {"type": "object", "properties": {
                     "channel_id": {"type": "integer"},
                     "max_age": {"type": "integer", "default": 86400},
@@ -743,7 +743,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_pin_message",
-                "description": "Fija un mensaje en un canal.",
+                "description": "Fija un mensaje.",
                 "parameters": {"type": "object", "properties": {
                     "channel_id": {"type": "integer"},
                     "message_id": {"type": "integer"},
@@ -751,7 +751,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_list_pins",
-                "description": "Lista los mensajes fijados de un canal.",
+                "description": "Lista los pins de un canal.",
                 "parameters": {"type": "object", "properties": {
                     "channel_id": {"type": "integer"},
                 }, "required": ["channel_id"]},
@@ -763,14 +763,14 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_get_user_info",
-                "description": "Info de un usuario (roles, fecha de ingreso).",
+                "description": "Info de un usuario.",
                 "parameters": {"type": "object", "properties": {
                     "user_id": {"type": "integer"},
                 }, "required": ["user_id"]},
             }},
             {"type": "function", "function": {
                 "name": "discord_add_reaction",
-                "description": "Añade una reacción a un mensaje.",
+                "description": "Añade una reacción.",
                 "parameters": {"type": "object", "properties": {
                     "channel_id": {"type": "integer"},
                     "message_id": {"type": "integer"},
@@ -789,13 +789,11 @@ class Agent:
 
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
-            # --- WEB ---
             if name == "web_search":
                 return await self._cached_search(args)
             if name == "web_fetch":
                 return await self._cached_fetch(args)
 
-            # --- ARCHIVOS ---
             if name == "file_list":
                 return {"files": self.files.list_files(args.get("path", "."))}
             if name == "file_read":
@@ -831,7 +829,6 @@ class Agent:
                     args.get("directory", "."), args["old"], args["new"]
                 )
 
-            # --- GITHUB ---
             if name == "github_list":
                 return await self.github_request("GET", "/user/repos?per_page=100")
             if name == "github_read":
@@ -933,7 +930,6 @@ class Agent:
                     "POST", f"/repos/{args['repo'].strip('/')}/forks"
                 )
 
-            # --- VERCEL ---
             if name == "vercel_projects":
                 return await self.vercel_request("GET", "/v9/projects?limit=100")
             if name == "vercel_deployments":
@@ -946,11 +942,9 @@ class Agent:
             if name == "vercel_redeploy":
                 return await self.vercel_redeploy(args)
 
-            # --- IMAGEN ---
             if name == "generate_image":
                 return await self.generate_image(args["prompt"])
 
-            # --- SANDBOX ---
             if name == "sandbox_run_python":
                 from sandbox import sandbox
                 return await sandbox.run_python(args["code"])
@@ -998,8 +992,12 @@ class Agent:
             if name == "sandbox_download":
                 from sandbox import sandbox
                 return await sandbox.download(args["url"], args["output"])
+            if name == "sandbox_verify_change":
+                from sandbox import sandbox
+                return await sandbox.verify_python_change(
+                    args["file_path"], args["old_content"], args["new_content"]
+                )
 
-            # --- DISCORD ---
             if name == "discord_send_message":
                 import discord_tools
                 return await discord_tools.send_message(
@@ -1119,14 +1117,18 @@ class Agent:
             cached["_cached"] = True
             return cached
         result = await self.files.web_fetch(url, max_chars)
-        if (isinstance(result, dict) and result.get("text")
-                and not result.get("error")):
-            motor.cache_set_fetch(f"{url}::{max_chars}", result)
+        if isinstance(result, dict):
+            if result.get("text") and not result.get("error"):
+                motor.cache_set_fetch(f"{url}::{max_chars}", result)
+            else:
+                result["_no_retry"] = True
+                result["_instruction"] = (
+                    "NO reintentes esta URL. Informa al usuario del error "
+                    "o prueba otra URL distinta."
+                )
         return result
 
-    async def github_request(
-        self, method: str, path: str, **kwargs: Any,
-    ) -> dict[str, Any]:
+    async def github_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         if not config.github_token:
             return {"error": "GITHUB_TOKEN no configurado."}
         headers = {
@@ -1137,8 +1139,7 @@ class Agent:
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.request(
-                method, "https://api.github.com" + path,
-                headers=headers, **kwargs,
+                method, "https://api.github.com" + path, headers=headers, **kwargs
             ) as response:
                 text = await response.text()
                 if response.status >= 400:
@@ -1151,33 +1152,67 @@ class Agent:
     async def github_write(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.github_token:
             return {"error": "GITHUB_TOKEN no configurado."}
+
         repo = args["repo"].strip("/")
         path = args["path"].lstrip("/")
-        content = base64.b64encode(args["content"].encode("utf-8")).decode("ascii")
-        url = f"https://api.github.com/repos/{repo}/contents/{path}"
+        new_content = args["content"]
+
+        url_check = f"https://api.github.com/repos/{repo}/contents/{path}"
         headers = {
             "Authorization": f"Bearer {config.github_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+
         timeout = aiohttp.ClientTimeout(total=60)
+        sha = None
+        old_content = ""
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            sha = None
-            async with session.get(url, headers=headers) as response:
+            async with session.get(url_check, headers=headers) as response:
                 if response.status == 200:
                     existing = await response.json(content_type=None)
                     sha = existing.get("sha")
+                    if existing.get("content"):
+                        old_content = base64.b64decode(
+                            existing["content"]
+                        ).decode("utf-8", "replace")
                 elif response.status not in {404, 301, 302}:
                     detail = await response.text()
                     return {"error": f"GitHub HTTP {response.status}", "detail": detail[:3000]}
-            payload = {"message": args["message"], "content": content}
+
+        if path.endswith(".py") and old_content:
+            from sandbox import sandbox
+            verify = await sandbox.verify_python_change(path, old_content, new_content)
+            if not verify.get("ok"):
+                return {
+                    "error": "VERIFICACION FALLIDA - No se subio",
+                    "errors": verify.get("errors"),
+                    "warnings": verify.get("warnings"),
+                    "old_lines": verify.get("old_lines"),
+                    "new_lines": verify.get("new_lines"),
+                }
+            if verify.get("warnings"):
+                print(f"[GITHUB] Warnings: {verify['warnings']}")
+
+        content_b64 = base64.b64encode(new_content.encode("utf-8")).decode("ascii")
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            payload: dict[str, Any] = {
+                "message": args["message"],
+                "content": content_b64,
+            }
             if sha:
                 payload["sha"] = sha
-            async with session.put(url, headers=headers, json=payload) as response:
+            async with session.put(url_check, headers=headers, json=payload) as response:
                 data = await response.json(content_type=None)
                 if response.status >= 400:
                     return {"error": f"GitHub HTTP {response.status}", "detail": data}
-                return data
+                return {
+                    "ok": True,
+                    "path": path,
+                    "sha": data.get("content", {}).get("sha"),
+                    "verified": True,
+                }
 
     async def github_create_repo(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.github_token:
@@ -1196,8 +1231,7 @@ class Agent:
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                "https://api.github.com/user/repos",
-                headers=headers, json=payload,
+                "https://api.github.com/user/repos", headers=headers, json=payload
             ) as resp:
                 data = await resp.json(content_type=None)
                 if resp.status >= 400:
@@ -1222,14 +1256,14 @@ class Agent:
         timeout = aiohttp.ClientTimeout(total=180)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(
-                f"{base}/git/refs/heads/{branch}", headers=headers,
+                f"{base}/git/refs/heads/{branch}", headers=headers
             ) as resp:
                 if resp.status == 404:
                     return {"error": f"La rama '{branch}' no existe."}
                 ref = await resp.json(content_type=None)
                 parent_sha = ref["object"]["sha"]
             async with session.get(
-                f"{base}/git/commits/{parent_sha}", headers=headers,
+                f"{base}/git/commits/{parent_sha}", headers=headers
             ) as resp:
                 commit = await resp.json(content_type=None)
                 parent_tree = commit["tree"]["sha"]
@@ -1272,11 +1306,7 @@ class Agent:
                 new_tree = tree["sha"]
             async with session.post(
                 f"{base}/git/commits", headers=headers,
-                json={
-                    "message": message,
-                    "tree": new_tree,
-                    "parents": [parent_sha],
-                },
+                json={"message": message, "tree": new_tree, "parents": [parent_sha]},
             ) as resp:
                 new_commit = await resp.json(content_type=None)
                 if resp.status >= 400:
@@ -1301,7 +1331,7 @@ class Agent:
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.request(
-                method, "https://api.vercel.com" + path, headers=headers,
+                method, "https://api.vercel.com" + path, headers=headers
             ) as response:
                 data = await response.json(content_type=None)
                 if response.status >= 400:
@@ -1406,7 +1436,7 @@ class Agent:
             for _ in range(60):
                 await asyncio.sleep(1)
                 async with session.get(
-                    polling_url, headers={"x-key": key},
+                    polling_url, headers={"x-key": key}
                 ) as response:
                     result = await response.json(content_type=None)
                     if response.status >= 400:
@@ -1423,13 +1453,9 @@ class Agent:
                         return {
                             "image_url": sample,
                             "local_path": local_path,
-                            "note": (
-                                "Usa discord_send_file con este local_path "
-                                "para enviarla."
-                            ),
+                            "note": "Usa discord_send_file con este local_path para enviarla.",
                         }
-                    if status in {"error", "failed", "request moderated",
-                                  "content moderated"}:
+                    if status in {"error", "failed", "request moderated", "content moderated"}:
                         return {"error": f"FLUX falló: {status}", "detail": result}
             return {"error": "FLUX tardó demasiado"}
 
@@ -1491,7 +1517,6 @@ class Agent:
         modelos = self._select_model(prompt, task, force_image)
         last_error: Exception | None = None
 
-        # Rondas inteligentes: sin límite duro, con detección de bucles
         MAX_SAFETY_ROUNDS = 100
         MAX_TOTAL_SECONDS = 300.0
         MAX_REPEAT_SAME_CALL = 2
@@ -1532,12 +1557,32 @@ class Agent:
                     message = choices[0].get("message") or {}
                     tool_calls = message.get("tool_calls") or []
 
+                    # ============================================================
+                    # FIX GEMINI thought_signature
+                    # Preservar extra_content (firma encriptada) que Gemini
+                    # necesita devolver en la siguiente ronda.
+                    # ============================================================
                     assistant_message: dict[str, Any] = {
                         "role": "assistant",
-                        "content": message.get("content") or "",
+                        "content": message.get("content"),
                     }
+
                     if tool_calls:
-                        assistant_message["tool_calls"] = tool_calls
+                        preserved_calls = []
+                        for call in tool_calls:
+                            preserved_call: dict[str, Any] = {
+                                "id": call.get("id"),
+                                "type": call.get("type", "function"),
+                                "function": call.get("function", {}),
+                            }
+                            if "extra_content" in call:
+                                preserved_call["extra_content"] = call["extra_content"]
+                            preserved_calls.append(preserved_call)
+                        assistant_message["tool_calls"] = preserved_calls
+
+                    if "extra_content" in message:
+                        assistant_message["extra_content"] = message["extra_content"]
+
                     messages.append(assistant_message)
 
                     # --- Respuesta final ---
@@ -1576,7 +1621,6 @@ class Agent:
                         if not isinstance(args, dict):
                             args = {}
 
-                        # Detección de bucle: misma tool + mismos args
                         call_sig = (
                             f"{name}::"
                             f"{json.dumps(args, sort_keys=True, default=str)}"
@@ -1587,9 +1631,7 @@ class Agent:
                                 f"[MOTOR] Bucle detectado en '{name}' "
                                 f"({call_count + 1} veces). Cortando."
                             )
-                            raise RuntimeError(
-                                f"Bucle infinito en '{name}'."
-                            )
+                            raise RuntimeError(f"Bucle infinito en '{name}'.")
                         call_history.append(call_sig)
 
                         result = await self.run_tool(name, args)
@@ -1600,7 +1642,6 @@ class Agent:
                             if result.get("_send_file"):
                                 files_to_send.append(result["_send_file"])
 
-                        # Detección de estancamiento
                         result_sig = connector.clean_tool_result(result)
                         result_hash = hashlib.blake2b(
                             result_sig.encode("utf-8", "ignore"),
@@ -1612,9 +1653,7 @@ class Agent:
                             print(
                                 f"[MOTOR] Estancamiento en '{name}'. Cortando."
                             )
-                            raise RuntimeError(
-                                f"Estancamiento en '{name}'."
-                            )
+                            raise RuntimeError(f"Estancamiento en '{name}'.")
                         result_history.append(result_hash)
 
                         messages.append({
