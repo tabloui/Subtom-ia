@@ -33,59 +33,60 @@ def _int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 @dataclass(frozen=True)
-class Settings:
+class AISlot:
+    index: int
+    key: str
+    model: str
 
-    # Discord
+
+@dataclass(frozen=True)
+class Settings:
     discord_token: str
     allowed_user_id: int
-
-    # Database
     database_url: str
-
-    # IA (cualquier proveedor)
-    ai_api_key: str
-    ai_model: str
+    ai_slots: list[AISlot]
     ai_temperature: float
     ai_max_tokens: int
     ai_max_tool_rounds: int
     ai_timeouts_seconds: int
-
-    # Bot
     bot_name: str
-    bot_language: str
-    bot_personality: str
-    bot_style: str
-    bot_system_text: str
-    bot_creator: str
-    bot_capabilities: str
-    bot_identity: str
-
-    # Usuario
-    user_name: str
-    user_description: str
-
-    # Memory
     memory_limit: int
     memory_messages: int
-
-    # Server
     workspace: str
     port: int
-
-    # Optional APIs
     github_token: str | None
     vercel_token: str | None
-
-    # FLUX
     flux_api_key_1: str | None
     flux_api_key_2: str | None
     flux_base_url: str
     flux_endpoint: str
 
+    @property
+    def ai_model(self) -> str:
+        if self.ai_slots:
+            return self.ai_slots[0].model
+        return "unknown"
+
+
+def _load_slots(default_model: str) -> list[AISlot]:
+    slots: list[AISlot] = []
+
+    main_key = _env("AI_API_KEY")
+    if main_key:
+        slots.append(AISlot(index=0, key=main_key, model=default_model))
+
+    for n in range(1, 21):
+        key = _env(f"AI_API_KEY_{n}")
+        if not key:
+            continue
+        model = _env(f"AI_MODEL_{n}", default_model)
+        slots.append(AISlot(index=n, key=key, model=model))
+
+    return slots
+
 
 def load_settings() -> Settings:
 
-    # --- DISCORD ---
     discord_token = _required("DISCORD_BOT_TOKEN")
 
     try:
@@ -93,83 +94,38 @@ def load_settings() -> Settings:
     except ValueError as exc:
         raise RuntimeError("DISCORD_ALLOWED_USER_ID debe ser numérico") from exc
 
-    # --- DATABASE ---
     database_url = _required("DATABASE_URL")
 
-    # --- IA (clave del proveedor) ---
-    ai_api_key = _required("AI_API_KEY")
+    default_model = _env("AI_MODEL", "qwen/qwen3.6-27b")
+    slots = _load_slots(default_model)
 
-    # --- TEMPERATURA ---
+    if not slots:
+        raise RuntimeError(
+            "Configura AI_API_KEY o AI_API_KEY_1, _2, _3..."
+        )
+
     temperature_raw = _env("AI_TEMPERATURE", "0.7")
     try:
         ai_temperature = float(temperature_raw)
     except ValueError as exc:
         raise RuntimeError("AI_TEMPERATURE debe ser un número") from exc
-    if not 0 <= ai_temperature <= 2:
-        raise RuntimeError("AI_TEMPERATURE debe estar entre 0 y 2")
 
-    # --- MODELO ---
-    ai_model = _env("AI_MODEL", "qwen/qwen3.6-27b")
-
-    # --- SETTINGS ---
     return Settings(
-        # Discord
         discord_token=discord_token,
         allowed_user_id=allowed_user_id,
-
-        # Database
         database_url=database_url,
-
-        # IA
-        ai_api_key=ai_api_key,
-        ai_model=ai_model,
+        ai_slots=slots,
         ai_temperature=ai_temperature,
         ai_max_tokens=_int("AI_MAX_TOKENS", 5000, 256, 16000),
         ai_max_tool_rounds=_int("MAX_TOOL_ROUNDS", 10, 1, 30),
         ai_timeouts_seconds=_int("AI_TIMEOUT_SECONDS", 90, 10, 300),
-
-        # Bot
         bot_name=_env("BOT_NAME", "Subtom"),
-        bot_language=_env("BOT_LANGUAGE", "español"),
-        bot_personality=_env(
-            "BOT_PERSONALITY",
-            "amable, gracioso, cercano, directo y conciso",
-        ),
-        bot_style=_env(
-            "BOT_STYLE",
-            "cercano y directo, sin exceso de emojis",
-        ),
-        bot_system_text=_env("BOT_SYSTEM_TEXT", ""),
-        bot_creator=_env("BOT_CREATOR", "Amin"),
-        bot_capabilities=_env(
-            "BOT_CAPABILITIES",
-            "programar, analizar código, sugerir mejoras, "
-            "detectar errores, usar GitHub y Vercel, automejorarse",
-        ),
-        bot_identity=_env(
-            "BOT_IDENTITY",
-            "Soy Subtom IA, hablo en español, vivo en Railway, "
-            "mi creador es Amin, puedo automejorarme guardando "
-            "mi código antes",
-        ),
-
-        # Usuario
-        user_name=_env("USER_NAME", "Amin"),
-        user_description=_env("USER_DESCRIPTION", "Amin, un programador"),
-
-        # Memory
         memory_limit=_int("MEMORY_LIMIT", 30, 0, 10080),
         memory_messages=_int("MEMORY_MESSAGES", 20, 4, 200),
-
-        # Server
         workspace=_env("SUBTOM_WORKSPACE", "./workspace"),
         port=_int("PORT", 3000, 1, 65535),
-
-        # Optional APIs
         github_token=_env("GITHUB_TOKEN"),
         vercel_token=_env("VERCEL_TOKEN"),
-
-        # FLUX
         flux_api_key_1=_env("FLUX_API_KEY_1"),
         flux_api_key_2=_env("FLUX_API_KEY_2"),
         flux_base_url=_env("FLUX_BASE_URL", "https://api.bfl.ai/v1"),
