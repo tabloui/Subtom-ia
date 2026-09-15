@@ -24,6 +24,9 @@ def detect_provider(api_key: str) -> tuple[str, str]:
     if key.startswith("xai-"):
         return "xai", "https://api.x.ai/v1"
 
+    if key.startswith("AQ."):
+        return "gemini", "https://generativelanguage.googleapis.com/v1beta/openai"
+
     if key.startswith("AIza"):
         return "gemini", "https://generativelanguage.googleapis.com/v1beta/openai"
 
