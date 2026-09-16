@@ -7,7 +7,12 @@ from typing import Any
 
 import aiohttp
 
-from config import config, AISlot
+from config import config
+
+
+def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
+    """Siempre devuelve local. Mantenido por compatibilidad con motor.py."""
+    return "local", config.ai_local_url
 
 
 class AIConnector:
