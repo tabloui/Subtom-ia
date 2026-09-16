@@ -51,9 +51,8 @@ class Settings:
     # Database
     database_url: str
 
-    # IA (solo local por ahora)
+    # IA (slots)
     ai_slots: list[AISlot]
-    ai_local_url: str
     ai_temperature: float
     ai_max_tokens: int
     ai_max_tool_rounds: int
@@ -126,17 +125,14 @@ def load_settings() -> Settings:
     database_url = _required("DATABASE_URL")
 
     # --- IA SLOTS ---
-    default_model = _env("AI_MODEL", "qwen")
+    default_model = _env(
+        "AI_MODEL",
+        "qwen/qwen3.6-27b:free",
+    )
     slots = _load_slots(default_model)
 
     if not slots:
         raise RuntimeError("Configura AI_API_KEY_1")
-
-    # --- URL LOCAL ---
-    ai_local_url = _env(
-        "AI_LOCAL_URL",
-        "http://127.0.0.1:8080/v1",
-    )
 
     # --- TEMPERATURA ---
     temperature_raw = _env("AI_TEMPERATURE", "0.7")
@@ -164,18 +160,17 @@ def load_settings() -> Settings:
 
         # IA
         ai_slots=slots,
-        ai_local_url=ai_local_url,
         ai_temperature=ai_temperature,
-        ai_max_tokens=_int("AI_MAX_TOKENS", 512, 16, 32000),
-        ai_max_tool_rounds=_int("MAX_SAFETY_ROUNDS", 20, 1, 200),
-        ai_timeouts_seconds=_int("AI_TIMEOUT_SECONDS", 120, 10, 600),
+        ai_max_tokens=_int("AI_MAX_TOKENS", 5000, 16, 32000),
+        ai_max_tool_rounds=_int("MAX_SAFETY_ROUNDS", 10, 1, 200),
+        ai_timeouts_seconds=_int("AI_TIMEOUT_SECONDS", 90, 10, 600),
 
         # Bot
         bot_name=_env("BOT_NAME", "Subtom"),
 
         # Memory
-        memory_limit=_int("MEMORY_LIMIT", 15, 0, 10080),
-        memory_messages=_int("MEMORY_MESSAGES", 6, 2, 200),
+        memory_limit=_int("MEMORY_LIMIT", 30, 0, 10080),
+        memory_messages=_int("MEMORY_MESSAGES", 20, 2, 200),
 
         # Server
         workspace=_env("SUBTOM_WORKSPACE", "./workspace"),
