@@ -127,7 +127,7 @@ def load_settings() -> Settings:
     # --- IA SLOTS ---
     default_model = _env(
         "AI_MODEL",
-        "qwen/qwen3.6-27b:free",
+        "Meta-Llama-3.3-70B-Instruct",
     )
     slots = _load_slots(default_model)
 
