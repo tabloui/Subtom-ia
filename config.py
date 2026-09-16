@@ -8,7 +8,7 @@ def _env(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name)
     if value is None:
         return default
-    value = value.strip()
+    value = value.strip().strip('"').strip("'")
     return value if value else default
 
 
@@ -28,7 +28,9 @@ def _int(name: str, default: int, minimum: int, maximum: int) -> int:
     except ValueError as exc:
         raise RuntimeError(f"{name} debe ser un entero") from exc
     if not minimum <= value <= maximum:
-        raise RuntimeError(f"{name} debe estar entre {minimum} y {maximum}")
+        raise RuntimeError(
+            f"{name} debe estar entre {minimum} y {maximum}"
+        )
     return value
 
 
@@ -49,8 +51,9 @@ class Settings:
     # Database
     database_url: str
 
-    # IA (multi-slot)
+    # IA (solo local por ahora)
     ai_slots: list[AISlot]
+    ai_local_url: str
     ai_temperature: float
     ai_max_tokens: int
     ai_max_tool_rounds: int
@@ -58,17 +61,6 @@ class Settings:
 
     # Bot
     bot_name: str
-    bot_language: str
-    bot_personality: str
-    bot_style: str
-    bot_system_text: str
-    bot_creator: str
-    bot_capabilities: str
-    bot_identity: str
-
-    # Usuario
-    user_name: str
-    user_description: str
 
     # Memory
     memory_limit: int
@@ -100,14 +92,18 @@ def _load_slots(default_model: str) -> list[AISlot]:
 
     main_key = _env("AI_API_KEY")
     if main_key:
-        slots.append(AISlot(index=0, key=main_key, model=default_model))
+        slots.append(
+            AISlot(index=0, key=main_key, model=default_model)
+        )
 
     for n in range(1, 21):
         key = _env(f"AI_API_KEY_{n}")
         if not key:
             continue
         model = _env(f"AI_MODEL_{n}", default_model)
-        slots.append(AISlot(index=n, key=key, model=model))
+        slots.append(
+            AISlot(index=n, key=key, model=model)
+        )
 
     return slots
 
@@ -118,30 +114,44 @@ def load_settings() -> Settings:
     discord_token = _required("DISCORD_BOT_TOKEN")
 
     try:
-        allowed_user_id = int(_required("DISCORD_ALLOWED_USER_ID"))
+        allowed_user_id = int(
+            _required("DISCORD_ALLOWED_USER_ID")
+        )
     except ValueError as exc:
-        raise RuntimeError("DISCORD_ALLOWED_USER_ID debe ser numérico") from exc
+        raise RuntimeError(
+            "DISCORD_ALLOWED_USER_ID debe ser numérico"
+        ) from exc
 
     # --- DATABASE ---
     database_url = _required("DATABASE_URL")
 
-    # --- IA (slots) ---
-    default_model = _env("AI_MODEL", "qwen/qwen3.6-27b")
+    # --- IA SLOTS ---
+    default_model = _env("AI_MODEL", "qwen")
     slots = _load_slots(default_model)
 
     if not slots:
-        raise RuntimeError(
-            "Configura AI_API_KEY o AI_API_KEY_1, _2, _3..."
-        )
+        raise RuntimeError("Configura AI_API_KEY_1")
+
+    # --- URL LOCAL ---
+    ai_local_url = _env(
+        "AI_LOCAL_URL",
+        "http://127.0.0.1:8080/v1",
+    )
 
     # --- TEMPERATURA ---
     temperature_raw = _env("AI_TEMPERATURE", "0.7")
+
     try:
         ai_temperature = float(temperature_raw)
     except ValueError as exc:
-        raise RuntimeError("AI_TEMPERATURE debe ser un número") from exc
+        raise RuntimeError(
+            "AI_TEMPERATURE debe ser un número"
+        ) from exc
+
     if not 0 <= ai_temperature <= 2:
-        raise RuntimeError("AI_TEMPERATURE debe estar entre 0 y 2")
+        raise RuntimeError(
+            "AI_TEMPERATURE debe estar entre 0 y 2"
+        )
 
     # --- SETTINGS ---
     return Settings(
@@ -154,43 +164,18 @@ def load_settings() -> Settings:
 
         # IA
         ai_slots=slots,
+        ai_local_url=ai_local_url,
         ai_temperature=ai_temperature,
-        ai_max_tokens=_int("AI_MAX_TOKENS", 5000, 256, 16000),
-        ai_max_tool_rounds=_int("MAX_TOOL_ROUNDS", 10, 1, 30),
-        ai_timeouts_seconds=_int("AI_TIMEOUT_SECONDS", 90, 10, 300),
+        ai_max_tokens=_int("AI_MAX_TOKENS", 512, 16, 32000),
+        ai_max_tool_rounds=_int("MAX_SAFETY_ROUNDS", 20, 1, 200),
+        ai_timeouts_seconds=_int("AI_TIMEOUT_SECONDS", 120, 10, 600),
 
         # Bot
         bot_name=_env("BOT_NAME", "Subtom"),
-        bot_language=_env("BOT_LANGUAGE", "español"),
-        bot_personality=_env(
-            "BOT_PERSONALITY",
-            "amable, gracioso, cercano, directo y conciso",
-        ),
-        bot_style=_env(
-            "BOT_STYLE",
-            "cercano y directo, sin exceso de emojis",
-        ),
-        bot_system_text=_env("BOT_SYSTEM_TEXT", ""),
-        bot_creator=_env("BOT_CREATOR", "Amin"),
-        bot_capabilities=_env(
-            "BOT_CAPABILITIES",
-            "programar, analizar código, sugerir mejoras, "
-            "detectar errores, usar GitHub y Vercel, automejorarse",
-        ),
-        bot_identity=_env(
-            "BOT_IDENTITY",
-            "Soy Subtom IA, hablo en español, vivo en Railway, "
-            "mi creador es Amin, puedo automejorarme guardando "
-            "mi código antes",
-        ),
-
-        # Usuario
-        user_name=_env("USER_NAME", "Amin"),
-        user_description=_env("USER_DESCRIPTION", "Amin, un programador"),
 
         # Memory
-        memory_limit=_int("MEMORY_LIMIT", 30, 0, 10080),
-        memory_messages=_int("MEMORY_MESSAGES", 20, 4, 200),
+        memory_limit=_int("MEMORY_LIMIT", 15, 0, 10080),
+        memory_messages=_int("MEMORY_MESSAGES", 6, 2, 200),
 
         # Server
         workspace=_env("SUBTOM_WORKSPACE", "./workspace"),
@@ -203,8 +188,14 @@ def load_settings() -> Settings:
         # FLUX
         flux_api_key_1=_env("FLUX_API_KEY_1"),
         flux_api_key_2=_env("FLUX_API_KEY_2"),
-        flux_base_url=_env("FLUX_BASE_URL", "https://api.bfl.ai/v1"),
-        flux_endpoint=_env("FLUX_ENDPOINT", "flux-2-flex"),
+        flux_base_url=_env(
+            "FLUX_BASE_URL",
+            "https://api.bfl.ai/v1",
+        ),
+        flux_endpoint=_env(
+            "FLUX_ENDPOINT",
+            "flux-2-flex",
+        ),
     )
 
 
