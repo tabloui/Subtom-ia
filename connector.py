@@ -30,6 +30,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
             "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
             "xai": ("xai", "https://api.x.ai/v1"),
+            "puter": ("puter", "https://api.puter.com/puterai/openai/v1"),
         }
         if forced.lower() in forced_map:
             return forced_map[forced.lower()]
@@ -57,9 +58,13 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if key.startswith("sk-proj-") or key.startswith("sk-"):
         return "openai", "https://api.openai.com/v1"
 
-    # SambaNova: clave en formato UUID (36 chars con 4 guiones)
+    # SambaNova: UUID
     if len(key) == 36 and key.count("-") == 4:
         return "sambanova", "https://api.sambanova.ai/v1"
+
+    # Puter: JWT (empieza por "eyJ" y tiene 2 puntos)
+    if key.startswith("eyJ") and key.count(".") == 2:
+        return "puter", "https://api.puter.com/puterai/openai/v1"
 
     return "openrouter", "https://openrouter.ai/api/v1"
 
@@ -422,4 +427,4 @@ class AIConnector:
         }
 
 
-connector = AIConnector()
+connector = AIConnector()p
