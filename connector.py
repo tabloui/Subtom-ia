@@ -62,7 +62,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if len(key) == 36 and key.count("-") == 4:
         return "sambanova", "https://api.sambanova.ai/v1"
 
-    # Puter: JWT (empieza por "eyJ" y tiene 2 puntos)
+    # Puter: JWT
     if key.startswith("eyJ") and key.count(".") == 2:
         return "puter", "https://api.puter.com/puterai/openai/v1"
 
@@ -254,7 +254,6 @@ class AIConnector:
         )
         provider, base_url = detect_provider(slot.key, forced)
 
-        # Gemini no soporta tools correctamente → quitarlas
         if provider == "gemini":
             payload = dict(payload)
             payload.pop("tools", None)
@@ -427,4 +426,4 @@ class AIConnector:
         }
 
 
-connector = AIConnector()p
+connector = AIConnector()
