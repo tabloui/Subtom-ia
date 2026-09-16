@@ -494,7 +494,6 @@ class Motor:
         self.cache = ResultCache(max_size=300, ttl=300.0)
         self.breaker = CircuitBreaker(threshold=3, cooldown=60.0)
         self.router = ModelRouter(self.metrics, self.breaker)
-        self._health_task: asyncio.Task | None = None
 
     def classify(self, prompt: str) -> TaskType:
         t0 = time.perf_counter()
@@ -576,6 +575,10 @@ class Motor:
             **self.metrics.snapshot(),
         }
 
+    # ============================================================
+    # PREWARM (solo ping a servicios que SÍ tienen /models)
+    # ============================================================
+
     async def prewarm(self) -> None:
         timeout = aiohttp.ClientTimeout(total=10)
         results: dict[str, Any] = {}
@@ -590,86 +593,26 @@ class Motor:
                 except Exception as exc:
                     results[url] = f"err:{type(exc).__name__}"
 
-            tasks = []
-
-            for slot in config.ai_slots:
-                provider, base_url = detect_provider(slot.key)
-                tasks.append(
-                    ping(
-                        f"{base_url}/models",
-                        {"Authorization": f"Bearer {slot.key}"},
-                    )
-                )
-
-            tasks.append(ping(config.flux_base_url.rstrip("/")))
-            tasks.append(ping("https://html.duckduckgo.com/html/"))
-
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        print(
-            f"[MOTOR] prewarm ({len(config.ai_slots)} slots) → {results}"
-        )
-
-    async def healthcheck_loop(self, interval: float = 300.0) -> None:
-        while True:
-            try:
-                await asyncio.sleep(interval)
-
-                for slot in config.ai_slots:
-                    provider, base_url = detect_provider(slot.key)
-                    try:
-                        async with aiohttp.ClientSession(
-                            timeout=aiohttp.ClientTimeout(total=15)
-                        ) as s:
-                            async with s.get(
-                                f"{base_url}/models",
-                                headers={
-                                    "Authorization": f"Bearer {slot.key}"
-                                },
-                            ) as r:
-                                if r.status == 200:
-                                    data = await r.json(content_type=None)
-                                    items = (
-                                        data.get("data")
-                                        if isinstance(data, dict)
-                                        else None
-                                    )
-                                    if isinstance(items, list):
-                                        alive = {
-                                            m["id"]
-                                            for m in items
-                                            if isinstance(m, dict) and m.get("id")
-                                        }
-                                        for m in list(self.breaker._open_until):
-                                            if m.startswith("model:"):
-                                                mid = m.split(":", 1)[1]
-                                                if mid in alive:
-                                                    self.breaker.reset(m)
-                                        print(
-                                            f"[MOTOR] healthcheck "
-                                            f"#{slot.index} {provider} ok, "
-                                            f"{len(alive)} modelos"
-                                        )
-                    except Exception as exc:
-                        print(
-                            f"[MOTOR] healthcheck #{slot.index} "
-                            f"{provider} err: {exc}"
-                        )
-
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                print(f"[MOTOR] healthcheck loop err: {exc}")
-
-    def start_healthcheck(self, interval: float = 300.0) -> None:
-        if self._health_task is None or self._health_task.done():
-            self._health_task = asyncio.create_task(
-                self.healthcheck_loop(interval)
+            await asyncio.gather(
+                ping("https://html.duckduckgo.com/html/"),
+                ping(config.flux_base_url.rstrip("/")),
+                return_exceptions=True,
             )
 
+        print(f"[MOTOR] prewarm → {results}")
+
+    # ============================================================
+    # HEALTHCHECK (deshabilitado: SambaNova no tiene /models)
+    # ============================================================
+
+    async def healthcheck_loop(self, interval: float = 300.0) -> None:
+        return
+
+    def start_healthcheck(self, interval: float = 300.0) -> None:
+        return
+
     def stop_healthcheck(self) -> None:
-        if self._health_task and not self._health_task.done():
-            self._health_task.cancel()
+        return
 
 
 motor = Motor()
