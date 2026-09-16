@@ -21,6 +21,15 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "together": ("together", "https://api.together.xyz/v1"),
             "deepinfra": ("deepinfra", "https://api.deepinfra.com/v1/openai"),
             "local": ("local", os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
+            "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
+            "groq": ("groq", "https://api.groq.com/openai/v1"),
+            "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
+            "gemini": ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
+            "openai": ("openai", "https://api.openai.com/v1"),
+            "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
+            "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
+            "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
+            "xai": ("xai", "https://api.x.ai/v1"),
         }
         if forced.lower() in forced_map:
             return forced_map[forced.lower()]
@@ -47,6 +56,10 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
         return "deepinfra", "https://api.deepinfra.com/v1/openai"
     if key.startswith("sk-proj-") or key.startswith("sk-"):
         return "openai", "https://api.openai.com/v1"
+
+    # SambaNova: clave en formato UUID (36 chars con 4 guiones)
+    if len(key) == 36 and key.count("-") == 4:
+        return "sambanova", "https://api.sambanova.ai/v1"
 
     return "openrouter", "https://openrouter.ai/api/v1"
 
@@ -111,7 +124,11 @@ class AIConnector:
 
         print(f"[CONNECTOR] {len(config.ai_slots)} slots configurados:")
         for slot in config.ai_slots:
-            forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
+            forced = (
+                os.getenv(f"AI_PROVIDER_{slot.index}")
+                if slot.index > 0
+                else os.getenv("AI_PROVIDER")
+            )
             provider, url = detect_provider(slot.key, forced)
             print(f"  #{slot.index}: {provider} | {slot.model} | {url}")
 
@@ -195,7 +212,11 @@ class AIConnector:
     def _mark_failure(self, slot: AISlot, cooldown: float, reason: str) -> None:
         self._cooldowns[slot.index] = self._now() + cooldown
         self._fail_count[slot.index] = self._fail_count.get(slot.index, 0) + 1
-        forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
+        forced = (
+            os.getenv(f"AI_PROVIDER_{slot.index}")
+            if slot.index > 0
+            else os.getenv("AI_PROVIDER")
+        )
         provider, _ = detect_provider(slot.key, forced)
         print(
             f"[CONNECTOR] #{slot.index} {provider} → {reason} "
@@ -206,15 +227,26 @@ class AIConnector:
         self._cursor = slot.index
         self._fail_count[slot.index] = 0
         if self._last_used != slot.index:
-            forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
+            forced = (
+                os.getenv(f"AI_PROVIDER_{slot.index}")
+                if slot.index > 0
+                else os.getenv("AI_PROVIDER")
+            )
             provider, _ = detect_provider(slot.key, forced)
             print(f"[CONNECTOR] Usando slot #{slot.index} ({provider})")
             self._last_used = slot.index
 
     async def _call_slot(
-        self, slot: AISlot, payload: dict, session: aiohttp.ClientSession,
+        self,
+        slot: AISlot,
+        payload: dict,
+        session: aiohttp.ClientSession,
     ) -> dict:
-        forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
+        forced = (
+            os.getenv(f"AI_PROVIDER_{slot.index}")
+            if slot.index > 0
+            else os.getenv("AI_PROVIDER")
+        )
         provider, base_url = detect_provider(slot.key, forced)
 
         # Gemini no soporta tools correctamente → quitarlas
@@ -343,7 +375,11 @@ class AIConnector:
     @property
     def provider(self) -> str:
         if config.ai_slots:
-            forced = os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}") if config.ai_slots[0].index > 0 else os.getenv("AI_PROVIDER")
+            forced = (
+                os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}")
+                if config.ai_slots[0].index > 0
+                else os.getenv("AI_PROVIDER")
+            )
             p, _ = detect_provider(config.ai_slots[0].key, forced)
             return p
         return "none"
@@ -351,7 +387,11 @@ class AIConnector:
     @property
     def base_url(self) -> str:
         if config.ai_slots:
-            forced = os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}") if config.ai_slots[0].index > 0 else os.getenv("AI_PROVIDER")
+            forced = (
+                os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}")
+                if config.ai_slots[0].index > 0
+                else os.getenv("AI_PROVIDER")
+            )
             _, u = detect_provider(config.ai_slots[0].key, forced)
             return u
         return ""
@@ -360,7 +400,11 @@ class AIConnector:
         now = self._now()
         result = []
         for slot in config.ai_slots:
-            forced = os.getenv(f"AI_PROVIDER_{slot.index}") if slot.index > 0 else os.getenv("AI_PROVIDER")
+            forced = (
+                os.getenv(f"AI_PROVIDER_{slot.index}")
+                if slot.index > 0
+                else os.getenv("AI_PROVIDER")
+            )
             provider, _ = detect_provider(slot.key, forced)
             cd = self._cooldowns.get(slot.index, 0)
             result.append({
