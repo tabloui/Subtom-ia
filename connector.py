@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from collections import OrderedDict
 from typing import Any
 
@@ -22,7 +23,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "deepinfra": ("deepinfra", "https://api.deepinfra.com/v1/openai"),
             "local": ("local", os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
             "termux": ("termux", os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
-            "freegpt4": ("freegpt4", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:8081/v1")),
+            "freegpt4": ("freegpt4", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:5500")),
             "danyapi": ("danyapi", "https://danyapi.cloudpub.ru/v1/"),
             "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
             "groq": ("groq", "https://api.groq.com/openai/v1"),
@@ -42,12 +43,11 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     key = (key or "").strip()
     url_env = os.getenv("AI_API_BASE_URL_1") or ""
 
-    # === Free-GPT4-WEB-API (tu traductor) ===
+    # === Free-GPT4-WEB-API (directo, sin traductor) ===
     if key == "dummy" or "trycloudflare.com" in url_env:
-        url = url_env or "http://127.0.0.1:8081/v1"
+        url = url_env or "http://127.0.0.1:5500"
         return "freegpt4", url
 
-    # === DanyAPI (por si vuelve a usarse) ===
     if "cloudpub.ru" in url_env:
         return "danyapi", "https://danyapi.cloudpub.ru/v1/"
 
@@ -182,8 +182,7 @@ class AIConnector:
                 self._session = None
 
     def system_prompt(self) -> str:
-        # La personalidad y las herramientas se configuran en el Settings
-        # de FreeGPT4 (http://127.0.0.1:5500/settings)
+        # La personalidad se configura en el Settings de FreeGPT4
         return ""
 
     @staticmethod
@@ -238,10 +237,95 @@ class AIConnector:
             print(f"[CONNECTOR] Usando slot #{slot.index} ({provider})")
             self._last_used = slot.index
 
+    def _build_prompt_text(self, messages: list[dict]) -> str:
+        """Convierte la lista de mensajes en un solo texto para FreeGPT4."""
+        parts: list[str] = []
+        for m in messages:
+            role = m.get("role", "")
+            content = m.get("content", "") or ""
+            if role == "system":
+                parts.append(content)
+            elif role == "user":
+                parts.append(content)
+            elif role == "assistant":
+                # Incluir la respuesta anterior como contexto
+                parts.append(f"(Tu respuesta anterior fue: {content})")
+        return "\n\n".join(p for p in parts if p)
+
+    def _build_openai_response(self, reply: str, model: str) -> dict:
+        """Empaqueta un texto plano en el formato JSON de OpenAI."""
+        return {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": reply},
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        }
+
+    async def _call_freegpt4(
+        self,
+        slot: AISlot,
+        messages: list[dict],
+        session: aiohttp.ClientSession,
+    ) -> dict:
+        """Llama directamente a FreeGPT4-WEB-API (sin traductor)."""
+        forced = (
+            os.getenv(f"AI_PROVIDER_{slot.index}")
+            if slot.index > 0
+            else os.getenv("AI_PROVIDER")
+        )
+        _, base_url = detect_provider(slot.key, forced)
+
+        clean_url = base_url.rstrip("/")
+        # Si la URL apunta a un puerto tipo 8081, usar la raíz /?text=
+        # Si tiene /v1 al final, se lo quitamos
+        if clean_url.endswith("/v1"):
+            clean_url = clean_url[:-3]
+
+        prompt_text = self._build_prompt_text(messages)
+
+        params = {"text": prompt_text}
+        # Intentar pasar el modelo como parámetro si lo soporta
+        if slot.model and slot.model != "gpt-4":
+            params["model"] = slot.model
+
+        async with session.get(
+            f"{clean_url}/",
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT),
+        ) as response:
+            body = await response.text()
+
+            if response.status == 200:
+                # El servidor devuelve texto plano
+                reply = body.strip()
+
+                # Detectar respuesta de error del servidor
+                if "<p id='response'>Error:" in reply or reply.startswith("Error:"):
+                    self._mark_failure(slot, 60, "proveedores caídos")
+                    raise RuntimeError(f"freegpt4: {reply[:200]}")
+
+                self._mark_success(slot)
+                return self._build_openai_response(reply, slot.model or "gpt-4")
+
+            self._mark_failure(slot, 60, f"{response.status}")
+            raise RuntimeError(f"freegpt4 {response.status}: {body[:200]}")
+
     async def _call_slot(
         self,
         slot: AISlot,
-        payload: dict,
+        messages: list[dict],
+        tools: list[dict] | None,
+        model: str | None,
         session: aiohttp.ClientSession,
     ) -> dict:
         forced = (
@@ -250,6 +334,13 @@ class AIConnector:
             else os.getenv("AI_PROVIDER")
         )
         provider, base_url = detect_provider(slot.key, forced)
+
+        # === FREE-GPT4: flujo especial ===
+        if provider == "freegpt4":
+            return await self._call_freegpt4(slot, messages, session)
+
+        # === Resto de proveedores: formato OpenAI estándar ===
+        payload = self._build_payload(slot, messages, tools, model)
 
         if provider == "gemini":
             payload = dict(payload)
@@ -329,9 +420,10 @@ class AIConnector:
         last_error: Exception | None = None
 
         for slot in slots:
-            payload = self._build_payload(slot, messages, tools, model)
             try:
-                result = await self._call_slot(slot, payload, session)
+                result = await self._call_slot(
+                    slot, messages, tools, model, session
+                )
                 if not tools:
                     self._cache.set(messages, cache_key_model, result)
                 return result
