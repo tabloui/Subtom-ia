@@ -21,6 +21,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "together": ("together", "https://api.together.xyz/v1"),
             "deepinfra": ("deepinfra", "https://api.deepinfra.com/v1/openai"),
             "local": ("local", os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
+            "termux": ("termux", os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
             "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
             "groq": ("groq", "https://api.groq.com/openai/v1"),
             "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
@@ -37,6 +38,11 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             return forced_map[forced.lower()]
 
     key = (key or "").strip()
+
+    # === TERMUX (tu servidor local vía Cloudflare Tunnel) ===
+    if key.startswith("sk-subtom-"):
+        url = os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")
+        return "termux", url
 
     if key.startswith("gsk_"):
         return "groq", "https://api.groq.com/openai/v1"
