@@ -31,6 +31,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
             "xai": ("xai", "https://api.x.ai/v1"),
             "puter": ("puter", "https://api.puter.com/puterai/openai/v1"),
+            "bytez": ("bytez", "https://api.bytez.com/models/v2/openai/v1"),
         }
         if forced.lower() in forced_map:
             return forced_map[forced.lower()]
@@ -65,6 +66,10 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     # Puter: JWT
     if key.startswith("eyJ") and key.count(".") == 2:
         return "puter", "https://api.puter.com/puterai/openai/v1"
+
+    # Bytez: clave hex de 32 caracteres
+    if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
+        return "bytez", "https://api.bytez.com/models/v2/openai/v1"
 
     return "openrouter", "https://openrouter.ai/api/v1"
 
