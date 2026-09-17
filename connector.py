@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import time
-import uuid
 from collections import OrderedDict
 from typing import Any
 
@@ -24,6 +23,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "local": ("local", os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
             "termux": ("termux", os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
             "freegpt4": ("freegpt4", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:5500")),
+            "puter": ("puter", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:8741/v1")),
             "danyapi": ("danyapi", "https://danyapi.cloudpub.ru/v1/"),
             "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
             "groq": ("groq", "https://api.groq.com/openai/v1"),
@@ -34,7 +34,6 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
             "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
             "xai": ("xai", "https://api.x.ai/v1"),
-            "puter": ("puter", "https://api.puter.com/puterai/openai/v1"),
             "bytez": ("bytez", "https://api.bytez.com/models/v2/openai/v1"),
         }
         if forced.lower() in forced_map:
@@ -43,14 +42,21 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     key = (key or "").strip()
     url_env = os.getenv("AI_API_BASE_URL_1") or ""
 
-    # === Free-GPT4-WEB-API (directo, sin traductor) ===
-    if key == "dummy" or "trycloudflare.com" in url_env:
+    # === Puter API Bridge ===
+    if key == "subtom123" or ":8741" in url_env:
+        url = url_env or "http://127.0.0.1:8741/v1"
+        return "puter", url
+
+    # === Free-GPT4-WEB-API ===
+    if key == "dummy" or "trycloudflare.com" in url_env and ":5500" in url_env:
         url = url_env or "http://127.0.0.1:5500"
         return "freegpt4", url
 
+    # === DanyAPI ===
     if "cloudpub.ru" in url_env:
         return "danyapi", "https://danyapi.cloudpub.ru/v1/"
 
+    # === Termux local ===
     if key.startswith("sk-subtom-"):
         url = url_env or "http://127.0.0.1:8080/v1"
         return "termux", url
@@ -79,14 +85,11 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if len(key) == 36 and key.count("-") == 4:
         return "sambanova", "https://api.sambanova.ai/v1"
 
-    if key.startswith("eyJ") and key.count(".") == 2:
-        return "puter", "https://api.puter.com/puterai/openai/v1"
-
     if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
         return "bytez", "https://api.bytez.com/models/v2/openai/v1"
 
     if url_env:
-        return "freegpt4", url_env
+        return "puter", url_env
 
     return "openrouter", "https://openrouter.ai/api/v1"
 
@@ -182,8 +185,37 @@ class AIConnector:
                 self._session = None
 
     def system_prompt(self) -> str:
-        # La personalidad se configura en el Settings de FreeGPT4
-        return ""
+        return (
+            "Eres Subtom IA, el asistente personal de Amin. Hablas siempre en español y eres "
+            "súper amable, cálido y cercano, como un buen amigo que sabe programar. Te gusta "
+            "conversar: das contexto, explicas con detalle, y tus respuestas son largas y "
+            "completas, nunca de una línea seca. Usas un tono natural, con humor seco cuando "
+            "encaja, sin exagerar con emojis. Eres técnico cuando hace falta pero sin ser "
+            "pedante.\n\n"
+            "FORMATO DE RESPUESTA: Separa tus ideas en párrafos cortos con líneas en blanco "
+            "entre ellos. Usa listas con guiones cuando enumeres cosas. Pon el código en "
+            "bloques con ```. No metas todo en un solo bloque de texto: respira, deja "
+            "espacios, haz que se lea fácil.\n\n"
+            "Tienes herramientas reales y las usas cuando toca:\n"
+            "- web_search y web_fetch para buscar y leer internet\n"
+            "- file_read, file_write, file_tree, file_grep y demás para archivos\n"
+            "- file_read_pdf para PDFs, file_count_words, file_stats\n"
+            "- github_* para gestionar repos, issues, PRs, branches, commits, archivos\n"
+            "- vercel_* para proyectos, deploys, envs\n"
+            "- sandbox_run_python, sandbox_run_shell, sandbox_run_node para ejecutar código\n"
+            "- generate_image para generar imágenes con FLUX\n"
+            "- discord_* para mensajes, encuestas, DMs, moderación, roles, canales\n"
+            "- discord_send_file para enviar archivos al chat\n\n"
+            "REGLA CRÍTICA CON GITHUB: antes de cambiar cualquier archivo en un repo, "
+            "SIEMPRE lee primero el archivo completo con github_read. Nunca escribas a "
+            "ciegas. Si modificas tu propio código, escribe en local con file_write, "
+            "verifica con sandbox_run_python usando py_compile que compila sin errores, "
+            "y solo si todo está OK, sube con github_write.\n\n"
+            "Cuando escribas código, que sea completo y funcional, no fragmentos. "
+            "Si ves un problema, dilo con claridad. Nunca inventes información. Si no "
+            "sabes algo, lo dices.\n\n"
+            "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
+        )
 
     @staticmethod
     def _now() -> float:
@@ -237,95 +269,10 @@ class AIConnector:
             print(f"[CONNECTOR] Usando slot #{slot.index} ({provider})")
             self._last_used = slot.index
 
-    def _build_prompt_text(self, messages: list[dict]) -> str:
-        """Convierte la lista de mensajes en un solo texto para FreeGPT4."""
-        parts: list[str] = []
-        for m in messages:
-            role = m.get("role", "")
-            content = m.get("content", "") or ""
-            if role == "system":
-                parts.append(content)
-            elif role == "user":
-                parts.append(content)
-            elif role == "assistant":
-                # Incluir la respuesta anterior como contexto
-                parts.append(f"(Tu respuesta anterior fue: {content})")
-        return "\n\n".join(p for p in parts if p)
-
-    def _build_openai_response(self, reply: str, model: str) -> dict:
-        """Empaqueta un texto plano en el formato JSON de OpenAI."""
-        return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": reply},
-                "finish_reason": "stop",
-            }],
-            "usage": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-            },
-        }
-
-    async def _call_freegpt4(
-        self,
-        slot: AISlot,
-        messages: list[dict],
-        session: aiohttp.ClientSession,
-    ) -> dict:
-        """Llama directamente a FreeGPT4-WEB-API (sin traductor)."""
-        forced = (
-            os.getenv(f"AI_PROVIDER_{slot.index}")
-            if slot.index > 0
-            else os.getenv("AI_PROVIDER")
-        )
-        _, base_url = detect_provider(slot.key, forced)
-
-        clean_url = base_url.rstrip("/")
-        # Si la URL apunta a un puerto tipo 8081, usar la raíz /?text=
-        # Si tiene /v1 al final, se lo quitamos
-        if clean_url.endswith("/v1"):
-            clean_url = clean_url[:-3]
-
-        prompt_text = self._build_prompt_text(messages)
-
-        params = {"text": prompt_text}
-        # Intentar pasar el modelo como parámetro si lo soporta
-        if slot.model and slot.model != "gpt-4":
-            params["model"] = slot.model
-
-        async with session.get(
-            f"{clean_url}/",
-            params=params,
-            timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT),
-        ) as response:
-            body = await response.text()
-
-            if response.status == 200:
-                # El servidor devuelve texto plano
-                reply = body.strip()
-
-                # Detectar respuesta de error del servidor
-                if "<p id='response'>Error:" in reply or reply.startswith("Error:"):
-                    self._mark_failure(slot, 60, "proveedores caídos")
-                    raise RuntimeError(f"freegpt4: {reply[:200]}")
-
-                self._mark_success(slot)
-                return self._build_openai_response(reply, slot.model or "gpt-4")
-
-            self._mark_failure(slot, 60, f"{response.status}")
-            raise RuntimeError(f"freegpt4 {response.status}: {body[:200]}")
-
     async def _call_slot(
         self,
         slot: AISlot,
-        messages: list[dict],
-        tools: list[dict] | None,
-        model: str | None,
+        payload: dict,
         session: aiohttp.ClientSession,
     ) -> dict:
         forced = (
@@ -334,13 +281,6 @@ class AIConnector:
             else os.getenv("AI_PROVIDER")
         )
         provider, base_url = detect_provider(slot.key, forced)
-
-        # === FREE-GPT4: flujo especial ===
-        if provider == "freegpt4":
-            return await self._call_freegpt4(slot, messages, session)
-
-        # === Resto de proveedores: formato OpenAI estándar ===
-        payload = self._build_payload(slot, messages, tools, model)
 
         if provider == "gemini":
             payload = dict(payload)
@@ -420,10 +360,9 @@ class AIConnector:
         last_error: Exception | None = None
 
         for slot in slots:
+            payload = self._build_payload(slot, messages, tools, model)
             try:
-                result = await self._call_slot(
-                    slot, messages, tools, model, session
-                )
+                result = await self._call_slot(slot, payload, session)
                 if not tools:
                     self._cache.set(messages, cache_key_model, result)
                 return result
