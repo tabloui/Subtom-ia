@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import os
-import random
 import time
 from collections import OrderedDict
 from typing import Any
@@ -12,28 +11,6 @@ from typing import Any
 import aiohttp
 
 from config import config, AISlot
-
-
-# ---------------------------------------------------------------------------
-# Cache global de modelos disponibles (se rellena al arrancar)
-# ---------------------------------------------------------------------------
-_DANYAPI_MODELS: list[str] = []
-
-
-async def _fetch_danyapi_models(session: aiohttp.ClientSession, base_url: str) -> list[str]:
-    """Consulta /v1/models y devuelve la lista de IDs disponibles."""
-    try:
-        async with session.get(
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": "Bearer dummy"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            if resp.status != 200:
-                return []
-            data = await resp.json()
-            return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
-    except Exception:
-        return []
 
 
 def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
@@ -45,6 +22,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "deepinfra": ("deepinfra", "https://api.deepinfra.com/v1/openai"),
             "local": ("local", os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
             "termux": ("termux", os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
+            "freegpt4": ("freegpt4", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:8081/v1")),
             "danyapi": ("danyapi", "https://danyapi.cloudpub.ru/v1/"),
             "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
             "groq": ("groq", "https://api.groq.com/openai/v1"),
@@ -62,12 +40,19 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             return forced_map[forced.lower()]
 
     key = (key or "").strip()
+    url_env = os.getenv("AI_API_BASE_URL_1") or ""
 
-    if key == "dummy" or "cloudpub.ru" in (os.getenv("AI_API_BASE_URL_1") or ""):
+    # === Free-GPT4-WEB-API (tu traductor) ===
+    if key == "dummy" or "trycloudflare.com" in url_env:
+        url = url_env or "http://127.0.0.1:8081/v1"
+        return "freegpt4", url
+
+    # === DanyAPI (por si vuelve a usarse) ===
+    if "cloudpub.ru" in url_env:
         return "danyapi", "https://danyapi.cloudpub.ru/v1/"
 
     if key.startswith("sk-subtom-"):
-        url = os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")
+        url = url_env or "http://127.0.0.1:8080/v1"
         return "termux", url
 
     if key.startswith("gsk_"):
@@ -100,7 +85,11 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
         return "bytez", "https://api.bytez.com/models/v2/openai/v1"
 
-    return "danyapi", "https://danyapi.cloudpub.ru/v1/"
+    # Fallback: si hay URL configurada, úsala
+    if url_env:
+        return "freegpt4", url_env
+
+    return "openrouter", "https://openrouter.ai/api/v1"
 
 
 class FastCache:
@@ -160,7 +149,6 @@ class AIConnector:
         self._cache = FastCache(max_size=150, ttl=60.0)
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
-        self._danyapi_models: list[str] = []
 
         print(f"[CONNECTOR] {len(config.ai_slots)} slots configurados:")
         for slot in config.ai_slots:
@@ -171,35 +159,6 @@ class AIConnector:
             )
             provider, url = detect_provider(slot.key, forced)
             print(f"  #{slot.index}: {provider} | {slot.model} | {url}")
-
-    async def init_models(self) -> None:
-        """Consulta DanyAPI y guarda la lista de modelos disponibles."""
-        global _DANYAPI_MODELS
-        session = await self._get_session()
-        models = await _fetch_danyapi_models(session, "https://danyapi.cloudpub.ru/v1/")
-        if models:
-            self._danyapi_models = models
-            _DANYAPI_MODELS = models
-            print(f"[CONNECTOR] DanyAPI modelos disponibles: {models}")
-        else:
-            print("[CONNECTOR] No se pudieron obtener modelos de DanyAPI, usando fallback")
-
-    def _pick_model(self, slot: AISlot) -> str:
-        """Elige un modelo: el del slot, uno aleatorio de DanyAPI, o el del config."""
-        forced = (
-            os.getenv(f"AI_PROVIDER_{slot.index}")
-            if slot.index > 0
-            else os.getenv("AI_PROVIDER")
-        )
-        provider, _ = detect_provider(slot.key, forced)
-
-        if provider == "danyapi" and self._danyapi_models:
-            # Si el slot tiene un modelo válido, úsalo; si no, elige uno al azar
-            if slot.model and slot.model in self._danyapi_models:
-                return slot.model
-            return random.choice(self._danyapi_models)
-
-        return slot.model or ""
 
     async def _get_session(self) -> aiohttp.ClientSession:
         async with self._session_lock:
@@ -323,8 +282,12 @@ class AIConnector:
             payload.pop("tools", None)
             payload.pop("tool_choice", None)
 
+        # Limpiar la URL: asegurar que no haya dobles // ni /chat/completions duplicado
+        clean_url = base_url.rstrip("/")
+        endpoint = f"{clean_url}/chat/completions"
+
         async with session.post(
-            f"{base_url.rstrip('/')}/chat/completions",
+            endpoint,
             headers={
                 "Authorization": f"Bearer {slot.key}",
                 "Content-Type": "application/json",
@@ -335,7 +298,10 @@ class AIConnector:
 
             if response.status == 200:
                 self._mark_success(slot)
-                return json.loads(body)
+                try:
+                    return json.loads(body)
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"{provider} respuesta no es JSON: {body[:200]}")
 
             if response.status == 429:
                 self._mark_failure(slot, 30, "429 rate limit")
@@ -418,12 +384,7 @@ class AIConnector:
         tools: list[dict] | None,
         model: str | None,
     ) -> dict:
-        # Si el caller especifica un modelo, úsalo. Si no, elige según el provider.
-        if model:
-            model_use = model
-        else:
-            model_use = self._pick_model(slot)
-
+        model_use = slot.model or model or ""
         payload: dict[str, Any] = {
             "model": model_use,
             "messages": messages,
@@ -484,7 +445,6 @@ class AIConnector:
                 "slot": slot.index,
                 "provider": provider,
                 "model": slot.model,
-                "model_efectivo": self._pick_model(slot),
                 "fallos": self._fail_count.get(slot.index, 0),
                 "cooldown_restante_s": max(0, round(cd - now, 1)),
                 "activo": now >= cd,
@@ -492,7 +452,6 @@ class AIConnector:
         return {
             "cursor_actual": self._cursor,
             "cache": self._cache.stats(),
-            "modelos_danyapi": self._danyapi_models,
             "slots": result,
         }
 
