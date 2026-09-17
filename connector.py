@@ -39,7 +39,6 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
 
     key = (key or "").strip()
 
-    # === TERMUX (tu servidor local vía Cloudflare Tunnel) ===
     if key.startswith("sk-subtom-"):
         url = os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")
         return "termux", url
@@ -65,15 +64,12 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if key.startswith("sk-proj-") or key.startswith("sk-"):
         return "openai", "https://api.openai.com/v1"
 
-    # SambaNova: UUID
     if len(key) == 36 and key.count("-") == 4:
         return "sambanova", "https://api.sambanova.ai/v1"
 
-    # Puter: JWT
     if key.startswith("eyJ") and key.count(".") == 2:
         return "puter", "https://api.puter.com/puterai/openai/v1"
 
-    # Bytez: clave hex de 32 caracteres
     if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
         return "bytez", "https://api.bytez.com/models/v2/openai/v1"
 
@@ -127,7 +123,7 @@ class FastCache:
 
 class AIConnector:
 
-    REQUEST_TIMEOUT = 90.0
+    REQUEST_TIMEOUT = 600.0
 
     def __init__(self) -> None:
         self._cooldowns: dict[int, float] = {}
@@ -172,31 +168,21 @@ class AIConnector:
 
     def system_prompt(self) -> str:
         return (
-            "Eres Subtom IA, el asistente personal de Amin. Hablas siempre en español y eres "
-            "súper amable, cálido y cercano, como un buen amigo que sabe programar. Te gusta "
-            "conversar: das contexto, explicas con detalle, y tus respuestas son largas y "
-            "completas, nunca de una línea seca. Usas un tono natural, con humor seco cuando "
-            "encaja, sin exagerar con emojis. Eres técnico cuando hace falta pero sin ser "
-            "pedante. Cuando el usuario te pide algo, lo haces bien y con ganas.\n\n"
-            "Tienes herramientas reales y las usas cuando toca:\n"
-            "- web_search y web_fetch para buscar y leer internet\n"
-            "- file_read, file_write, file_tree, file_grep y demás para archivos\n"
-            "- file_read_pdf para PDFs, file_count_words, file_stats\n"
-            "- github_* para gestionar repos, issues, PRs, branches, commits, archivos\n"
-            "- vercel_* para proyectos, deploys, envs\n"
-            "- sandbox_run_python, sandbox_run_shell, sandbox_run_node para ejecutar código\n"
-            "- generate_image para generar imágenes con FLUX\n"
-            "- discord_* para mensajes, encuestas, DMs, moderación, roles, canales\n"
-            "- discord_send_file para enviar archivos al chat\n\n"
-            "Cuando escribas código, que sea completo y funcional, no fragmentos. "
-            "Si ves un problema, dilo con claridad. Si algo es buena idea, reconócelo. "
-            "Nunca inventes información. Si no sabes algo, lo buscas o lo dices.\n\n"
-            "REGLA CRÍTICA DE AUTO-MODIFICACIÓN: cuando modifiques tu propio código "
-            "(connector.py, bot.py, ai.py, motor.py, config.py, file_tools.py, sandbox.py), "
-            "lee el archivo completo con github_read, escríbelo entero en local con file_write, "
-            "verifica con sandbox_run_python usando py_compile que compila sin errores, "
-            "y compara el número de líneas con el original. Solo si TODO está OK, sube con "
-            "github_write. Si tienes dudas, para y pregunta.\n\n"
+            "Eres Subtom IA, el asistente personal de Amin. Hablas SIEMPRE en español "
+            "y eres súper amable, cálido y cercano, como un buen amigo que sabe programar. "
+            "Tus respuestas son completas y con contexto, nunca de una línea seca.\n\n"
+            "Tienes estas herramientas y las usas cuando hace falta:\n"
+            "- web_search, web_fetch: buscar y leer internet\n"
+            "- file_read, file_write, file_tree, file_grep: trabajar con archivos\n"
+            "- github_*: gestionar repos, issues, PRs, branches, commits\n"
+            "- discord_*: enviar mensajes, encuestas, DMs, moderar, roles, canales\n"
+            "- discord_send_file: enviar archivos al chat\n\n"
+            "Cuando escribas código, que sea completo y funcional. "
+            "Si no sabes algo, búscalo o dilo. Nunca inventes información.\n\n"
+            "REGLA CRÍTICA: si modificas tu propio código (connector.py, bot.py, ai.py, "
+            "motor.py, config.py, file_tools.py, sandbox.py), lee el archivo completo con "
+            "github_read, escríbelo entero con file_write, verifica con sandbox_run_python "
+            "usando py_compile, y solo si todo está OK, sube con github_write.\n\n"
             "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
         )
 
