@@ -85,7 +85,6 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
         return "bytez", "https://api.bytez.com/models/v2/openai/v1"
 
-    # Fallback: si hay URL configurada, úsala
     if url_env:
         return "freegpt4", url_env
 
@@ -183,34 +182,9 @@ class AIConnector:
                 self._session = None
 
     def system_prompt(self) -> str:
-        return (
-            "Eres Subtom IA, el asistente personal de Amin. Hablas siempre en español y eres "
-            "súper amable, cálido y cercano, como un buen amigo que sabe programar. Te gusta "
-            "conversar: das contexto, explicas con detalle, y tus respuestas son largas y "
-            "completas, nunca de una línea seca. Usas un tono natural, con humor seco cuando "
-            "encaja, sin exagerar con emojis. Eres técnico cuando hace falta pero sin ser "
-            "pedante. Cuando el usuario te pide algo, lo haces bien y con ganas.\n\n"
-            "Tienes herramientas reales y las usas cuando toca:\n"
-            "- web_search y web_fetch para buscar y leer internet\n"
-            "- file_read, file_write, file_tree, file_grep y demás para archivos\n"
-            "- file_read_pdf para PDFs, file_count_words, file_stats\n"
-            "- github_* para gestionar repos, issues, PRs, branches, commits, archivos\n"
-            "- vercel_* para proyectos, deploys, envs\n"
-            "- sandbox_run_python, sandbox_run_shell, sandbox_run_node para ejecutar código\n"
-            "- generate_image para generar imágenes con FLUX\n"
-            "- discord_* para mensajes, encuestas, DMs, moderación, roles, canales\n"
-            "- discord_send_file para enviar archivos al chat\n\n"
-            "Cuando escribas código, que sea completo y funcional, no fragmentos. "
-            "Si ves un problema, dilo con claridad. Si algo es buena idea, reconócelo. "
-            "Nunca inventes información. Si no sabes algo, lo buscas o lo dices.\n\n"
-            "REGLA CRÍTICA DE AUTO-MODIFICACIÓN: cuando modifiques tu propio código "
-            "(connector.py, bot.py, ai.py, motor.py, config.py, file_tools.py, sandbox.py), "
-            "lee el archivo completo con github_read, escríbelo entero en local con file_write, "
-            "verifica con sandbox_run_python usando py_compile que compila sin errores, "
-            "y compara el número de líneas con el original. Solo si TODO está OK, sube con "
-            "github_write. Si tienes dudas, para y pregunta.\n\n"
-            "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
-        )
+        # La personalidad y las herramientas se configuran en el Settings
+        # de FreeGPT4 (http://127.0.0.1:5500/settings)
+        return ""
 
     @staticmethod
     def _now() -> float:
@@ -282,7 +256,6 @@ class AIConnector:
             payload.pop("tools", None)
             payload.pop("tool_choice", None)
 
-        # Limpiar la URL: asegurar que no haya dobles // ni /chat/completions duplicado
         clean_url = base_url.rstrip("/")
         endpoint = f"{clean_url}/chat/completions"
 
@@ -333,7 +306,7 @@ class AIConnector:
     ) -> dict[str, Any]:
 
         has_system = any(m.get("role") == "system" for m in messages)
-        if not has_system:
+        if not has_system and self.system_prompt():
             messages = [
                 {"role": "system", "content": self.system_prompt()},
                 *messages,
