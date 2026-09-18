@@ -24,6 +24,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "termux": ("termux", os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
             "freegpt4": ("freegpt4", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:5500")),
             "puter": ("puter", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:8741/v1")),
+            "keylessai": ("keylessai", os.getenv("AI_API_BASE_URL_1", "https://keylessai.thryx.workers.dev/v1")),
             "danyapi": ("danyapi", "https://danyapi.cloudpub.ru/v1/"),
             "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
             "groq": ("groq", "https://api.groq.com/openai/v1"),
@@ -42,13 +43,18 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     key = (key or "").strip()
     url_env = os.getenv("AI_API_BASE_URL_1") or ""
 
+    # === KeylessAI (sin cuenta, sin API key real) ===
+    if key == "not-needed" or "keylessai" in url_env:
+        url = url_env or "https://keylessai.thryx.workers.dev/v1"
+        return "keylessai", url
+
     # === Puter API Bridge ===
     if key == "subtom123" or ":8741" in url_env:
         url = url_env or "http://127.0.0.1:8741/v1"
         return "puter", url
 
     # === Free-GPT4-WEB-API ===
-    if key == "dummy" or "trycloudflare.com" in url_env and ":5500" in url_env:
+    if key == "dummy" or ("trycloudflare.com" in url_env and ":5500" in url_env):
         url = url_env or "http://127.0.0.1:5500"
         return "freegpt4", url
 
@@ -89,7 +95,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
         return "bytez", "https://api.bytez.com/models/v2/openai/v1"
 
     if url_env:
-        return "puter", url_env
+        return "keylessai", url_env
 
     return "openrouter", "https://openrouter.ai/api/v1"
 
@@ -290,12 +296,16 @@ class AIConnector:
         clean_url = base_url.rstrip("/")
         endpoint = f"{clean_url}/chat/completions"
 
+        # KeylessAI y Puter no necesitan Authorization real, pero se lo mandamos igual
+        headers = {"Content-Type": "application/json"}
+        if provider not in ("keylessai",):
+            headers["Authorization"] = f"Bearer {slot.key}"
+        else:
+            headers["Authorization"] = f"Bearer {slot.key}"
+
         async with session.post(
             endpoint,
-            headers={
-                "Authorization": f"Bearer {slot.key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             json=payload,
         ) as response:
             body = await response.text()
