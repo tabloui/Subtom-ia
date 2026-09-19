@@ -17,27 +17,15 @@ from config import config, AISlot
 def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if forced:
         forced_map = {
-            "ollama": ("ollama", "https://ollama.com/v1"),
-            "aimlapi": ("aimlapi", "https://api.aimlapi.com/v1"),
-            "together": ("together", "https://api.together.xyz/v1"),
-            "deepinfra": ("deepinfra", "https://api.deepinfra.com/v1/openai"),
-            "local": ("local", os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
-            "termux": ("termux", os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
-            "freegpt4": ("freegpt4", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:5500")),
-            "puter": ("puter", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:8741/v1")),
-            "keylessai": ("keylessai", os.getenv("AI_API_BASE_URL_1", "https://keylessai.thryx.workers.dev/v1")),
-            "omniroute": ("omniroute", os.getenv("AI_API_BASE_URL_1", "http://cloud.omniroute.online/v1")),
-            "danyapi": ("danyapi", "https://danyapi.cloudpub.ru/v1/"),
             "gemini": ("gemini", os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta"),
             "groq": ("groq", "https://api.groq.com/openai/v1"),
-            "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
             "openai": ("openai", "https://api.openai.com/v1"),
-            "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
+            "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
             "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
+            "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
             "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
             "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
             "xai": ("xai", "https://api.x.ai/v1"),
-            "bytez": ("bytez", "https://api.bytez.com/models/v2/openai/v1"),
         }
         if forced.lower() in forced_map:
             return forced_map[forced.lower()]
@@ -51,20 +39,6 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
         if url.rstrip("/").endswith("/openai"):
             url = url.rstrip("/")[:-7]
         return "gemini", url
-
-    # === OmniRoute / KeylessAI / Puter / FreeGPT4 ===
-    if "omniroute" in url_env or "omnirouter" in url_env:
-        return "omniroute", url_env
-    if key == "not-needed" or "keylessai" in url_env:
-        return "keylessai", url_env or "https://keylessai.thryx.workers.dev/v1"
-    if key == "subtom123" or ":8741" in url_env:
-        return "puter", url_env or "http://127.0.0.1:8741/v1"
-    if key == "dummy" or ("trycloudflare.com" in url_env and ":5500" in url_env):
-        return "freegpt4", url_env or "http://127.0.0.1:5500"
-    if "cloudpub.ru" in url_env:
-        return "danyapi", "https://danyapi.cloudpub.ru/v1/"
-    if key.startswith("sk-subtom-"):
-        return "termux", url_env or "http://127.0.0.1:8080/v1"
 
     # === Groq ===
     if key.startswith("gsk_"):
@@ -90,9 +64,6 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
 
     if len(key) == 36 and key.count("-") == 4:
         return "sambanova", "https://api.sambanova.ai/v1"
-
-    if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
-        return "bytez", "https://api.bytez.com/models/v2/openai/v1"
 
     if url_env:
         return "openai", url_env
@@ -192,9 +163,17 @@ class AIConnector:
             "FORMATO DE RESPUESTA: Separa tus ideas en párrafos cortos con líneas en blanco "
             "entre ellos. Usa listas con guiones cuando enumeres cosas. Pon el código en "
             "bloques con ```. No metas todo en un solo bloque de texto.\n\n"
-            "Tienes herramientas reales. Úsalas cuando toca. Si no estás seguro de la ruta "
-            "de un archivo en GitHub, usa github_search_code o github_tree ANTES de "
-            "github_read. Nunca inventes contenido: si una herramienta falla, dilo.\n\n"
+            "REGLAS ESTRICTAS CON GITHUB:\n"
+            "- Para LEER un archivo, usa github_read. NUNCA uses github_get_file para leer contenido.\n"
+            "- Para ESCRIBIR o actualizar un archivo, usa github_write. Él solo obtiene el SHA internamente.\n"
+            "- NO uses github_get_file ni github_update_file. Están prohibidas.\n"
+            "- Si github_read falla con 404, ANTES de reintentar usa github_search_code o github_tree para localizar la ruta real. NO repitas la misma llamada.\n"
+            "- Si no encuentras un archivo tras 2 intentos, PARA y dile al usuario que no existe.\n\n"
+            "REGLAS CON SANDBOX:\n"
+            "- sandbox_run_python solo para código Python pequeño y de prueba.\n"
+            "- Si falla 2 veces con el mismo error, PARA y reporta el error. NO reintentes.\n\n"
+            "Tienes herramientas reales. Úsalas cuando toca. Nunca inventes contenido: si "
+            "una herramienta falla, dilo claramente.\n\n"
             "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
         )
 
@@ -411,7 +390,7 @@ class AIConnector:
                 self._mark_failure(slot, 300, f"{response.status} auth")
                 raise RuntimeError(f"gemini {response.status}")
             if response.status == 400:
-                self._mark_failure(slot, 30, "400 payload/thought_signature")
+                self._mark_failure(slot, 30, "400 payload")
                 raise RuntimeError(f"gemini 400: {body[:300]}")
             if response.status == 404:
                 self._mark_failure(slot, 120, "404 modelo")
@@ -424,7 +403,7 @@ class AIConnector:
             raise RuntimeError(f"gemini {response.status}: {body[:300]}")
 
     # ============================================================
-    # OPENAI-COMPATIBLE
+    # OPENAI-COMPATIBLE (Groq, OpenAI, etc.)
     # ============================================================
 
     async def _call_openai_compat(
