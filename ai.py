@@ -24,8 +24,8 @@ IMAGE_EXTENSIONS = {
 
 REPO_PRINCIPAL = "tabloui/subtom-ia"
 
-# Límite duro de líneas por tool call para evitar malformed_function_call de Gemini
-MAX_LINES_PER_TOOL_CALL = 100
+# Límite duro de líneas por tool call (Gemini rompe el JSON a partir de ~100)
+MAX_LINES_PER_TOOL_CALL = 80
 
 
 class Agent:
@@ -200,7 +200,7 @@ class Agent:
                 "description": (
                     "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 80 líneas por llamada. "
                     "Si el archivo es más grande, divídelo: file_write para las primeras 80 líneas, "
-                    "file_append para cada bloque siguiente de 80. NUNCA pongas más de 80 líneas en 'content'."
+                    "file_append para cada bloque siguiente. NUNCA pongas más de 80 líneas en 'content'."
                 ),
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
@@ -336,10 +336,16 @@ class Agent:
             {"type": "function", "function": {
                 "name": "github_upload_project",
                 "description": (
-                    "Sube UNO O VARIOS archivos a GitHub en un solo commit. USA ESTO para subir archivos "
-                    "grandes (más de 80 líneas) que ya tienes en el workspace. Lee los archivos del workspace "
-                    "y los sube como blob, sin meter el contenido en el tool call. Es la forma CORRECTA de "
-                    "subir archivos grandes. Parámetro 'files': diccionario {ruta_en_repo: ruta_local}."
+                    "Sube UNO O VARIOS archivos a GitHub en un solo commit usando la Git Data API. "
+                    "USA ESTO para subir archivos grandes (más de 80 líneas) que ya tienes en el workspace. "
+                    "Lee los archivos del disco y los sube como blobs, sin meter el contenido en el tool call.\n\n"
+                    "EJEMPLO de cómo subir bot.py (211 líneas):\n"
+                    "1) file_write(path='pending_bot.py', content='<80 líneas>')\n"
+                    "2) file_append(path='pending_bot.py', content='<80 líneas>')\n"
+                    "3) file_append(path='pending_bot.py', content='<51 líneas>')\n"
+                    "4) github_upload_project(repo='tabloui/subtom-ia', files={'bot.py': 'pending_bot.py'}, message='Update bot.py')\n\n"
+                    "Parámetro 'files': diccionario {ruta_en_repo: ruta_local}. "
+                    "Rutas locales pueden ser relativas al workspace."
                 ),
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
@@ -626,7 +632,8 @@ class Agent:
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
             # ============================================================
-            # CHECK AUTOMÁTICO DE TAMAÑO PARA EVITAR malformed_function_call
+            # GUARD: rechaza bloques > MAX_LINES_PER_TOOL_CALL sin parar el bot
+            # (el bot recibirá el error y volverá a intentarlo dividiendo)
             # ============================================================
             if name in ("file_write", "file_append", "github_write"):
                 content = args.get("content", "")
@@ -637,15 +644,12 @@ class Agent:
                         return {
                             "error": f"CONTENIDO DEMASIADO GRANDE: {line_count} líneas (máximo {MAX_LINES_PER_TOOL_CALL})",
                             "instruction": (
-                                "El contenido es demasiado grande para una sola llamada. "
-                                "Divídelo en trozos de máximo 80 líneas:\n"
-                                "1) Usa file_write para las primeras 80 líneas con path='pending_X.py'.\n"
-                                "2) Usa file_append para cada bloque siguiente de 80 líneas.\n"
-                                "3) Cuando el archivo esté completo, usa github_upload_project "
-                                "con files={'NOMBRE.py': 'pending_X.py'} para subirlo.\n"
-                                "NO uses github_write para archivos grandes."
+                                f"El bloque tiene {line_count} líneas y el máximo es {MAX_LINES_PER_TOOL_CALL}. "
+                                "Vuelve a intentarlo AHORA con un bloque MÁS PEQUEÑO. "
+                                "Si estás escribiendo un archivo grande: usa file_write para las primeras 80 líneas, "
+                                "y file_append para el resto en bloques de 80 líneas. "
+                                "Cuando el archivo esté completo en el workspace, súbelo con github_upload_project."
                             ),
-                            "_no_retry": True,
                         }
 
             # WEB
@@ -1098,7 +1102,6 @@ class Agent:
             uploaded = []
             for repo_path, ws_path in files_map.items():
                 try:
-                    # Resolver el path local: primero intentar tal cual, luego dentro del workspace
                     full = Path(ws_path)
                     if not full.is_absolute() and not full.exists():
                         candidate = Path(config.workspace) / ws_path
@@ -1313,10 +1316,7 @@ class Agent:
                             elif finish == "max_tokens":
                                 answer = "⚠️ La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
                             elif finish == "malformed_function_call":
-                                answer = (
-                                    "⚠️ El modelo intentó hacer una llamada a herramienta demasiado grande y se rompió. "
-                                    "Vuelve a intentarlo pidiéndole que divida el contenido en trozos de máximo 80 líneas."
-                                )
+                                answer = "⚠️ El modelo intentó hacer una llamada a herramienta demasiado grande y se rompió. Vuelve a intentarlo."
                             elif finish == "other":
                                 answer = "⚠️ Gemini devolvió un error genérico. Prueba otra vez."
                             else:
@@ -1357,6 +1357,8 @@ class Agent:
                             if result.get("_send_file"):
                                 files_to_send.append(result["_send_file"])
 
+                        # _no_retry solo se respeta si es un error real (verificación/tests)
+                        # El guard de tamaño NO usa _no_retry, así que el bot reintenta dividiendo
                         if isinstance(result, dict) and result.get("_no_retry"):
                             err_msg = result.get("error", "error desconocido")
                             extra = result.get("instruction", "")
