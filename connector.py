@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from collections import OrderedDict
 from typing import Any
 
@@ -24,16 +25,13 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "termux": ("termux", os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
             "freegpt4": ("freegpt4", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:5500")),
             "puter": ("puter", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:8741/v1")),
-            "keylessai": ("keylessai", os.getenv("AI_API_BASE_URL_1", "https://keylessai.thryx.workers.dev/v1")),
-            "omniroute": ("omniroute", os.getenv("AI_API_BASE_URL_1", "http://cloud.omniroute.online/v1")),
-            "danyapi": ("danyapi", "https://danyapi.cloudpub.ru/v1/"),
-            "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
+            "gemini": ("gemini", os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta"),
             "groq": ("groq", "https://api.groq.com/openai/v1"),
             "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
-            "gemini": ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
             "openai": ("openai", "https://api.openai.com/v1"),
             "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
             "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
+            "together_ai": ("together", "https://api.together.xyz/v1"),
             "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
             "xai": ("xai", "https://api.x.ai/v1"),
             "bytez": ("bytez", "https://api.bytez.com/models/v2/openai/v1"),
@@ -44,44 +42,25 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     key = (key or "").strip()
     url_env = os.getenv("AI_API_BASE_URL_1") or ""
 
-    # === OmniRoute / OmniRouter (gateway multi-proveedor) ===
-    if "omniroute" in url_env or "omnirouter" in url_env:
-        return "omniroute", url_env
+    # === Gemini (clave AQ. o URL de Google) ===
+    if key.startswith("AQ.") or key.startswith("AIza") or "generativelanguage.googleapis.com" in url_env:
+        url = url_env or "https://generativelanguage.googleapis.com/v1beta"
+        # Asegurar que NO acabe en /openai (usamos el endpoint nativo)
+        if url.rstrip("/").endswith("/openai"):
+            url = url.rstrip("/")[:-7]
+        return "gemini", url
 
-    # === KeylessAI (sin cuenta, sin API key real) ===
-    if key == "not-needed" or "keylessai" in url_env:
-        url = url_env or "https://keylessai.thryx.workers.dev/v1"
-        return "keylessai", url
-
-    # === Puter API Bridge ===
-    if key == "subtom123" or ":8741" in url_env:
-        url = url_env or "http://127.0.0.1:8741/v1"
-        return "puter", url
-
-    # === Free-GPT4-WEB-API ===
-    if key == "dummy" or ("trycloudflare.com" in url_env and ":5500" in url_env):
-        url = url_env or "http://127.0.0.1:5500"
-        return "freegpt4", url
-
-    # === DanyAPI ===
-    if "cloudpub.ru" in url_env:
-        return "danyapi", "https://danyapi.cloudpub.ru/v1/"
-
-    # === Termux local ===
-    if key.startswith("sk-subtom-"):
-        url = url_env or "http://127.0.0.1:8080/v1"
-        return "termux", url
-
+    # === Groq ===
     if key.startswith("gsk_"):
         return "groq", "https://api.groq.com/openai/v1"
+
+    # === Otros OpenAI-compatibles por prefijo de clave ===
     if key.startswith("sk-ant-"):
         return "anthropic", "https://api.anthropic.com/v1"
     if key.startswith("sk-or-v1-"):
         return "openrouter", "https://openrouter.ai/api/v1"
     if key.startswith("xai-"):
         return "xai", "https://api.x.ai/v1"
-    if key.startswith("AQ.") or key.startswith("AIza"):
-        return "gemini", "https://generativelanguage.googleapis.com/v1beta/openai"
     if key.startswith("csk-"):
         return "cerebras", "https://api.cerebras.ai/v1"
     if key.startswith("nvapi-"):
@@ -99,8 +78,9 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
         return "bytez", "https://api.bytez.com/models/v2/openai/v1"
 
+    # Fallback: si hay URL configurada, usarla como OpenAI-compatible
     if url_env:
-        return "omniroute", url_env
+        return "openai", url_env
 
     return "openrouter", "https://openrouter.ai/api/v1"
 
@@ -143,11 +123,7 @@ class FastCache:
             self._data.popitem(last=False)
 
     def stats(self) -> dict:
-        return {
-            "hits": self.hits,
-            "misses": self.misses,
-            "size": len(self._data),
-        }
+        return {"hits": self.hits, "misses": self.misses, "size": len(self._data)}
 
 
 class AIConnector:
@@ -177,11 +153,8 @@ class AIConnector:
         async with self._session_lock:
             if self._session is None or self._session.closed:
                 tcp = aiohttp.TCPConnector(
-                    limit=20,
-                    limit_per_host=10,
-                    ttl_dns_cache=300,
-                    enable_cleanup_closed=True,
-                    force_close=False,
+                    limit=20, limit_per_host=10,
+                    ttl_dns_cache=300, enable_cleanup_closed=True, force_close=False,
                 )
                 self._session = aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT),
@@ -205,26 +178,10 @@ class AIConnector:
             "pedante.\n\n"
             "FORMATO DE RESPUESTA: Separa tus ideas en párrafos cortos con líneas en blanco "
             "entre ellos. Usa listas con guiones cuando enumeres cosas. Pon el código en "
-            "bloques con ```. No metas todo en un solo bloque de texto: respira, deja "
-            "espacios, haz que se lea fácil.\n\n"
-            "Tienes herramientas reales y las usas cuando toca:\n"
-            "- web_search y web_fetch para buscar y leer internet\n"
-            "- file_read, file_write, file_tree, file_grep y demás para archivos\n"
-            "- file_read_pdf para PDFs, file_count_words, file_stats\n"
-            "- github_* para gestionar repos, issues, PRs, branches, commits, archivos\n"
-            "- vercel_* para proyectos, deploys, envs\n"
-            "- sandbox_run_python, sandbox_run_shell, sandbox_run_node para ejecutar código\n"
-            "- generate_image para generar imágenes con FLUX\n"
-            "- discord_* para mensajes, encuestas, DMs, moderación, roles, canales\n"
-            "- discord_send_file para enviar archivos al chat\n\n"
-            "REGLA CRÍTICA CON GITHUB: antes de cambiar cualquier archivo en un repo, "
-            "SIEMPRE lee primero el archivo completo con github_read. Nunca escribas a "
-            "ciegas. Si modificas tu propio código, escribe en local con file_write, "
-            "verifica con sandbox_run_python usando py_compile que compila sin errores, "
-            "y solo si todo está OK, sube con github_write.\n\n"
-            "Cuando escribas código, que sea completo y funcional, no fragmentos. "
-            "Si ves un problema, dilo con claridad. Nunca inventes información. Si no "
-            "sabes algo, lo dices.\n\n"
+            "bloques con ```. No metas todo en un solo bloque de texto.\n\n"
+            "Tienes herramientas reales. Úsalas cuando toca. Si no estás seguro de la ruta "
+            "de un archivo en GitHub, usa github_search_code o github_tree ANTES de "
+            "github_read. Nunca inventes contenido: si una herramienta falla, dilo.\n\n"
             "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
         )
 
@@ -262,10 +219,7 @@ class AIConnector:
             else os.getenv("AI_PROVIDER")
         )
         provider, _ = detect_provider(slot.key, forced)
-        print(
-            f"[CONNECTOR] #{slot.index} {provider} → {reason} "
-            f"(cd {cooldown:.0f}s, fallos: {self._fail_count[slot.index]})"
-        )
+        print(f"[CONNECTOR] #{slot.index} {provider} → {reason} (cd {cooldown:.0f}s)")
 
     def _mark_success(self, slot: AISlot) -> None:
         self._cursor = slot.index
@@ -280,10 +234,200 @@ class AIConnector:
             print(f"[CONNECTOR] Usando slot #{slot.index} ({provider})")
             self._last_used = slot.index
 
-    async def _call_slot(
+    # ============================================================
+    # GEMINI NATIVO con soporte de tool calling
+    # ============================================================
+
+    @staticmethod
+    def _tools_to_gemini(tools: list[dict] | None) -> list[dict] | None:
+        """Convierte tools en formato OpenAI a formato Gemini."""
+        if not tools:
+            return None
+        declarations = []
+        for t in tools:
+            fn = t.get("function", {})
+            declarations.append({
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+            })
+        return [{"functionDeclarations": declarations}]
+
+    @staticmethod
+    def _messages_to_gemini(messages: list[dict]) -> tuple[dict, list[dict]]:
+        """Convierte mensajes OpenAI a formato Gemini. Devuelve (systemInstruction, contents)."""
+        system_parts: list[dict] = []
+        contents: list[dict] = []
+
+        for m in messages:
+            role = m.get("role")
+            content = m.get("content")
+
+            if role == "system":
+                if isinstance(content, str):
+                    system_parts.append({"text": content})
+                continue
+
+            if role == "tool":
+                tool_name = m.get("name") or m.get("tool_call_id") or "tool"
+                try:
+                    payload = json.loads(content) if isinstance(content, str) else content
+                except Exception:
+                    payload = {"result": str(content)}
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": payload if isinstance(payload, dict) else {"result": payload},
+                        }
+                    }],
+                })
+                continue
+
+            if role == "assistant" and m.get("tool_calls"):
+                parts = []
+                if content:
+                    parts.append({"text": content})
+                for call in m["tool_calls"]:
+                    fn = call.get("function", {})
+                    raw_args = fn.get("arguments", "{}")
+                    try:
+                        args_dict = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except Exception:
+                        args_dict = {}
+                    parts.append({
+                        "functionCall": {
+                            "name": fn.get("name", ""),
+                            "args": args_dict,
+                        }
+                    })
+                contents.append({"role": "model", "parts": parts})
+                continue
+
+            g_role = "model" if role == "assistant" else "user"
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if block.get("type") == "text":
+                        parts.append({"text": block["text"]})
+                    elif block.get("type") == "image_url":
+                        url = block["image_url"]["url"]
+                        if url.startswith("data:"):
+                            header, b64 = url.split(",", 1)
+                            mime = header.split(":")[1].split(";")[0]
+                            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+                contents.append({"role": g_role, "parts": parts})
+            else:
+                contents.append({"role": g_role, "parts": [{"text": content or ""}]})
+
+        return {"parts": system_parts}, contents
+
+    @staticmethod
+    def _gemini_response_to_openai(data: dict, model: str) -> dict:
+        """Convierte respuesta de Gemini a formato OpenAI, incluyendo tool_calls."""
+        text = ""
+        tool_calls = []
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            for p in parts:
+                if "text" in p:
+                    text += p["text"]
+                if "functionCall" in p:
+                    fc = p["functionCall"]
+                    tool_calls.append({
+                        "id": f"call_{uuid.uuid4().hex[:24]}",
+                        "type": "function",
+                        "function": {
+                            "name": fc.get("name", ""),
+                            "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False),
+                        },
+                    })
+
+        message: dict[str, Any] = {"role": "assistant", "content": text or None}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+
+        return {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": message,
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+            }],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+
+    async def _call_gemini(
         self,
         slot: AISlot,
-        payload: dict,
+        messages: list[dict],
+        tools: list[dict] | None,
+        session: aiohttp.ClientSession,
+    ) -> dict:
+        base_url = (os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        if base_url.endswith("/openai"):
+            base_url = base_url[:-7]
+        model = slot.model or "gemini-3.5-flash-lite"
+        endpoint = f"{base_url}/models/{model}:generateContent?key={slot.key}"
+
+        system_instruction, contents = self._messages_to_gemini(messages)
+        payload: dict[str, Any] = {"contents": contents}
+        if system_instruction["parts"]:
+            payload["systemInstruction"] = system_instruction
+        payload["generationConfig"] = {
+            "temperature": config.ai_temperature,
+            "maxOutputTokens": config.ai_max_tokens,
+        }
+        gemini_tools = self._tools_to_gemini(tools)
+        if gemini_tools:
+            payload["tools"] = gemini_tools
+
+        async with session.post(
+            endpoint,
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        ) as response:
+            body = await response.text()
+
+            if response.status == 200:
+                self._mark_success(slot)
+                try:
+                    data = json.loads(body)
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"gemini respuesta no es JSON: {body[:200]}")
+                return self._gemini_response_to_openai(data, model)
+
+            if response.status == 429:
+                self._mark_failure(slot, 60, "429 quota")
+                raise RuntimeError("gemini 429")
+            if response.status in (401, 403):
+                self._mark_failure(slot, 300, f"{response.status} auth")
+                raise RuntimeError(f"gemini {response.status}")
+            if response.status == 404:
+                self._mark_failure(slot, 120, "404 modelo")
+                raise RuntimeError("gemini 404")
+            if response.status >= 500:
+                self._mark_failure(slot, 60, f"{response.status} server")
+                raise RuntimeError(f"gemini {response.status}")
+
+            self._mark_failure(slot, 60, f"{response.status}")
+            raise RuntimeError(f"gemini {response.status}: {body[:300]}")
+
+    # ============================================================
+    # OPENAI-COMPATIBLE (Groq, OpenAI, etc.)
+    # ============================================================
+
+    async def _call_openai_compat(
+        self,
+        slot: AISlot,
+        messages: list[dict],
+        tools: list[dict] | None,
+        model: str | None,
         session: aiohttp.ClientSession,
     ) -> dict:
         forced = (
@@ -293,10 +437,15 @@ class AIConnector:
         )
         provider, base_url = detect_provider(slot.key, forced)
 
-        if provider == "gemini":
-            payload = dict(payload)
-            payload.pop("tools", None)
-            payload.pop("tool_choice", None)
+        payload = {
+            "model": slot.model or model or "",
+            "messages": messages,
+            "temperature": config.ai_temperature,
+            "max_tokens": config.ai_max_tokens,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
 
         clean_url = base_url.rstrip("/")
         endpoint = f"{clean_url}/chat/completions"
@@ -330,15 +479,16 @@ class AIConnector:
             if response.status == 404:
                 self._mark_failure(slot, 120, "404 modelo")
                 raise RuntimeError(f"{provider} 404")
-            if response.status == 413:
-                self._mark_failure(slot, 60, "413 payload")
-                raise RuntimeError(f"{provider} 413")
             if response.status >= 500:
                 self._mark_failure(slot, 60, f"{response.status} server")
                 raise RuntimeError(f"{provider} {response.status}")
 
             self._mark_failure(slot, 60, f"{response.status}")
             raise RuntimeError(f"{provider} {response.status}: {body[:200]}")
+
+    # ============================================================
+    # COMPLETE (dispatch por proveedor)
+    # ============================================================
 
     async def complete(
         self,
@@ -349,14 +499,9 @@ class AIConnector:
 
         has_system = any(m.get("role") == "system" for m in messages)
         if not has_system and self.system_prompt():
-            messages = [
-                {"role": "system", "content": self.system_prompt()},
-                *messages,
-            ]
+            messages = [{"role": "system", "content": self.system_prompt()}, *messages]
 
-        cache_key_model = model or (
-            config.ai_slots[0].model if config.ai_slots else ""
-        )
+        cache_key_model = model or (config.ai_slots[0].model if config.ai_slots else "")
         if not tools:
             cached = self._cache.get(messages, cache_key_model)
             if cached is not None:
@@ -371,9 +516,17 @@ class AIConnector:
         last_error: Exception | None = None
 
         for slot in slots:
-            payload = self._build_payload(slot, messages, tools, model)
+            forced = (
+                os.getenv(f"AI_PROVIDER_{slot.index}")
+                if slot.index > 0
+                else os.getenv("AI_PROVIDER")
+            )
+            provider, _ = detect_provider(slot.key, forced)
             try:
-                result = await self._call_slot(slot, payload, session)
+                if provider == "gemini":
+                    result = await self._call_gemini(slot, messages, tools, session)
+                else:
+                    result = await self._call_openai_compat(slot, messages, tools, model, session)
                 if not tools:
                     self._cache.set(messages, cache_key_model, result)
                 return result
@@ -392,32 +545,11 @@ class AIConnector:
 
         raise last_error or RuntimeError("Todos los slots fallaron.")
 
-    def _build_payload(
-        self,
-        slot: AISlot,
-        messages: list[dict],
-        tools: list[dict] | None,
-        model: str | None,
-    ) -> dict:
-        model_use = slot.model or model or ""
-        payload: dict[str, Any] = {
-            "model": model_use,
-            "messages": messages,
-            "temperature": config.ai_temperature,
-            "max_tokens": config.ai_max_tokens,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        return payload
-
     def clean_tool_result(self, result: Any) -> str:
         try:
             if isinstance(result, str):
                 return result[:20000]
-            return json.dumps(
-                result, ensure_ascii=False, default=str
-            )[:20000]
+            return json.dumps(result, ensure_ascii=False, default=str)[:20000]
         except Exception:
             return str(result)[:20000]
 
@@ -464,11 +596,7 @@ class AIConnector:
                 "cooldown_restante_s": max(0, round(cd - now, 1)),
                 "activo": now >= cd,
             })
-        return {
-            "cursor_actual": self._cursor,
-            "cache": self._cache.stats(),
-            "slots": result,
-        }
+        return {"cursor_actual": self._cursor, "cache": self._cache.stats(), "slots": result}
 
 
 connector = AIConnector()
