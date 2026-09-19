@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import time
 from pathlib import Path
 
 import aiohttp
@@ -13,6 +14,33 @@ from ai import agent
 from config import config
 from connector import connector
 from motor import motor
+
+
+# ============================================================
+# UPTIME (MEJORA 3)
+# ============================================================
+
+_START_TIME = time.monotonic()
+
+
+def _uptime_seconds() -> float:
+    return time.monotonic() - _START_TIME
+
+
+def _uptime_human() -> str:
+    secs = int(_uptime_seconds())
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or days:
+        parts.append(f"{hours}h")
+    if mins or hours or days:
+        parts.append(f"{mins}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
 
 
 # ============================================================
@@ -37,6 +65,8 @@ async def health(_: web.Request) -> web.Response:
         "service": config.bot_name,
         "provider": connector.provider,
         "model": config.ai_model,
+        "uptime_seconds": round(_uptime_seconds(), 1),
+        "uptime_human": _uptime_human(),
     })
 
 
@@ -50,6 +80,8 @@ async def metrics(_: web.Request) -> web.Response:
     try:
         data = motor.snapshot()
         data["rotador"] = connector.stats()
+        data["uptime_seconds"] = round(_uptime_seconds(), 1)
+        data["uptime_human"] = _uptime_human()
     except Exception as exc:
         return web.json_response(
             {"error": f"{type(exc).__name__}: {exc}"},
@@ -339,7 +371,8 @@ async def on_ready() -> None:
         f"{config.bot_name} | "
         f"{len(config.ai_slots)} slots | "
         f"principal: {connector.provider} | "
-        f"modelo: {config.ai_model}"
+        f"modelo: {config.ai_model} | "
+        f"uptime desde arranque: 0s"
     )
 
 
