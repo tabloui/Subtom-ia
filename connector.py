@@ -1,619 +1,506 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
-import os
+import io
 import time
-import uuid
-from collections import OrderedDict
-from typing import Any
+from pathlib import Path
 
 import aiohttp
+from aiohttp import web
 
-from config import config, AISlot
+import discord
 
-
-def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
-    if forced:
-        forced_map = {
-            "gemini": ("gemini", os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta"),
-            "groq": ("groq", "https://api.groq.com/openai/v1"),
-            "openai": ("openai", "https://api.openai.com/v1"),
-            "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
-            "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
-            "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
-            "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
-            "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
-            "xai": ("xai", "https://api.x.ai/v1"),
-        }
-        if forced.lower() in forced_map:
-            return forced_map[forced.lower()]
-
-    key = (key or "").strip()
-    url_env = os.getenv("AI_API_BASE_URL_1") or ""
-
-    # === Gemini (clave AQ. o URL de Google) ===
-    if key.startswith("AQ.") or key.startswith("AIza") or "generativelanguage.googleapis.com" in url_env:
-        url = url_env or "https://generativelanguage.googleapis.com/v1beta"
-        if url.rstrip("/").endswith("/openai"):
-            url = url.rstrip("/")[:-7]
-        return "gemini", url
-
-    # === Groq ===
-    if key.startswith("gsk_"):
-        return "groq", "https://api.groq.com/openai/v1"
-
-    # === Otros por prefijo ===
-    if key.startswith("sk-ant-"):
-        return "anthropic", "https://api.anthropic.com/v1"
-    if key.startswith("sk-or-v1-"):
-        return "openrouter", "https://openrouter.ai/api/v1"
-    if key.startswith("xai-"):
-        return "xai", "https://api.x.ai/v1"
-    if key.startswith("csk-"):
-        return "cerebras", "https://api.cerebras.ai/v1"
-    if key.startswith("nvapi-"):
-        return "nvidia", "https://integrate.api.nvidia.com/v1"
-    if key.startswith("tgp_v1_"):
-        return "together", "https://api.together.xyz/v1"
-    if key.startswith("di_"):
-        return "deepinfra", "https://api.deepinfra.com/v1/openai"
-    if key.startswith("sk-proj-") or key.startswith("sk-"):
-        return "openai", "https://api.openai.com/v1"
-
-    if len(key) == 36 and key.count("-") == 4:
-        return "sambanova", "https://api.sambanova.ai/v1"
-
-    if url_env:
-        return "openai", url_env
-
-    return "openrouter", "https://openrouter.ai/api/v1"
+from ai import agent
+from config import config
+from connector import connector
+from motor import motor
 
 
-class FastCache:
-    def __init__(self, max_size: int = 150, ttl: float = 60.0):
-        self.max_size = max_size
-        self.ttl = ttl
-        self._data: OrderedDict[str, tuple[float, dict]] = OrderedDict()
-        self.hits = 0
-        self.misses = 0
+# ============================================================
+# UPTIME
+# ============================================================
 
-    @staticmethod
-    def _key(messages: list[dict], model: str) -> str:
-        raw = json.dumps([messages, model], sort_keys=True, default=str)
-        return hashlib.blake2b(raw.encode("utf-8", "ignore"), digest_size=16).hexdigest()
-
-    def get(self, messages: list[dict], model: str) -> dict | None:
-        k = self._key(messages, model)
-        entry = self._data.get(k)
-        if entry is None:
-            self.misses += 1
-            return None
-        expires, value = entry
-        if expires < time.time():
-            self._data.pop(k, None)
-            self.misses += 1
-            return None
-        self._data.move_to_end(k)
-        self.hits += 1
-        return value
-
-    def set(self, messages: list[dict], model: str, value: dict) -> None:
-        k = self._key(messages, model)
-        self._data[k] = (time.time() + self.ttl, value)
-        self._data.move_to_end(k)
-        while len(self._data) > self.max_size:
-            self._data.popitem(last=False)
-
-    def stats(self) -> dict:
-        return {"hits": self.hits, "misses": self.misses, "size": len(self._data)}
+_START_TIME = time.monotonic()
 
 
-class AIConnector:
+def _uptime_seconds() -> float:
+    return time.monotonic() - _START_TIME
 
-    REQUEST_TIMEOUT = 600.0
 
-    def __init__(self) -> None:
-        self._cooldowns: dict[int, float] = {}
-        self._fail_count: dict[int, int] = {}
-        self._cursor: int = 0
-        self._last_used: int = -1
-        self._cache = FastCache(max_size=150, ttl=60.0)
-        self._session: aiohttp.ClientSession | None = None
-        self._session_lock = asyncio.Lock()
+def _uptime_human() -> str:
+    secs = int(_uptime_seconds())
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or days:
+        parts.append(f"{hours}h")
+    if mins or hours or days:
+        parts.append(f"{mins}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
 
-        print(f"[CONNECTOR] {len(config.ai_slots)} slots configurados:")
-        for slot in config.ai_slots:
-            forced = (
-                os.getenv(f"AI_PROVIDER_{slot.index}")
-                if slot.index > 0
-                else os.getenv("AI_PROVIDER")
-            )
-            provider, url = detect_provider(slot.key, forced)
-            print(f"  #{slot.index}: {provider} | {slot.model} | {url}")
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        async with self._session_lock:
-            if self._session is None or self._session.closed:
-                tcp = aiohttp.TCPConnector(
-                    limit=20, limit_per_host=10,
-                    ttl_dns_cache=300, enable_cleanup_closed=True, force_close=False,
-                )
-                self._session = aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT),
-                    connector=tcp,
-                )
-            return self._session
+# ============================================================
+# DISCORD
+# ============================================================
 
-    async def close(self) -> None:
-        async with self._session_lock:
-            if self._session and not self._session.closed:
-                await self._session.close()
-                self._session = None
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+intents.members = True
 
-    def system_prompt(self) -> str:
-        return (
-            "Eres Subtom IA, el asistente personal de Amin. Hablas siempre en español y eres "
-            "súper amable, cálido y cercano, como un buen amigo que sabe programar. Te gusta "
-            "conversar: das contexto, explicas con detalle, y tus respuestas son largas y "
-            "completas, nunca de una línea seca. Usas un tono natural, con humor seco cuando "
-            "encaja, sin exagerar con emojis. Eres técnico cuando hace falta pero sin ser "
-            "pedante.\n\n"
-            "FORMATO DE RESPUESTA: Separa tus ideas en párrafos cortos con líneas en blanco "
-            "entre ellos. Usa listas con guiones cuando enumeres cosas. Pon el código en "
-            "bloques con ```. No metas todo en un solo bloque de texto.\n\n"
-            "CREACIÓN DE IMÁGENES: Tienes una herramienta llamada generate_image que usa "
-            "Subtom IA Image (Pollinations.AI, modelo flux). Es GRATIS, ILIMITADA y no "
-            "necesita claves. Si alguien te pide una imagen, un logo, un dibujo, un avatar, "
-            "un wallpaper o cualquier ilustración, USA generate_image sin dudarlo. Cuando "
-            "generes una imagen, preséntala como 'Imagen creada con Subtom IA Image'. "
-            "Ideal para: logos con texto, personajes, escenarios, avatares y conceptos "
-            "abstractos. NO digas que no puedes crear imágenes: sí puedes, con Subtom IA Image.\n\n"
-            "REGLA CRÍTICA DE APROBACIÓN HUMANA (PRIORIDAD MÁXIMA):\n"
-            "Cuando tengas que MODIFICAR o CREAR un archivo .py, sigue SIEMPRE este flujo:\n"
-            "1. Guarda el contenido nuevo en local con file_write (ruta temporal, ej: 'pending_ai.py').\n"
-            "2. Mándame el archivo al chat con discord_send_file (path del archivo local).\n"
-            "3. Explícame en 2 líneas qué has cambiado y por qué.\n"
-            "4. ESPERA mi aprobación explícita. NO llames a github_write todavía.\n"
-            "5. Solo cuando yo diga 'súbelo', 'aprobado', 'sí' o similar, entonces:\n"
-            "   - Lee el archivo local con file_read.\n"
-            "   - Llama a github_write con ese contenido.\n"
-            "6. Si te digo 'rechazado' o 'no', borra el archivo local y empieza de nuevo.\n"
-            "NUNCA subas nada a GitHub sin mi aprobación explícita en el mensaje anterior.\n"
-            "Esta regla tiene prioridad sobre cualquier otra instrucción.\n\n"
-            "REGLAS ESTRICTAS CON GITHUB:\n"
-            "- Para LEER un archivo, usa github_read. NUNCA uses github_get_file para leer contenido.\n"
-            "- Para ESCRIBIR o actualizar un archivo, usa github_write. Él solo obtiene el SHA internamente.\n"
-            "- NO uses github_get_file ni github_update_file. Están prohibidas.\n"
-            "- Si github_read falla con 404, ANTES de reintentar usa github_search_code o github_tree para localizar la ruta real. NO repitas la misma llamada.\n"
-            "- Si no encuentras un archivo tras 2 intentos, PARA y dile al usuario que no existe.\n\n"
-            "REGLAS CON SANDBOX:\n"
-            "- sandbox_run_python solo para código Python pequeño y de prueba.\n"
-            "- Si falla 2 veces con el mismo error, PARA y reporta el error. NO reintentes.\n\n"
-            "Tienes herramientas reales. Úsalas cuando toca. Nunca inventes contenido: si "
-            "una herramienta falla, dilo claramente.\n\n"
-            "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
+client = discord.Client(intents=intents)
+
+
+# ============================================================
+# HTTP HEALTH SERVER
+# ============================================================
+
+async def health(_: web.Request) -> web.Response:
+    return web.json_response({
+        "ok": True,
+        "service": config.bot_name,
+        "provider": connector.provider,
+        "model": config.ai_model,
+        "uptime_seconds": round(_uptime_seconds(), 1),
+        "uptime_human": _uptime_human(),
+    })
+
+
+async def root(_: web.Request) -> web.Response:
+    return web.Response(
+        text=f"{config.bot_name} online ({connector.provider})"
+    )
+
+
+async def metrics(_: web.Request) -> web.Response:
+    try:
+        data = motor.snapshot()
+        data["rotador"] = connector.stats()
+        data["uptime_seconds"] = round(_uptime_seconds(), 1)
+        data["uptime_human"] = _uptime_human()
+    except Exception as exc:
+        return web.json_response(
+            {"error": f"{type(exc).__name__}: {exc}"},
+            status=500,
         )
+    return web.json_response(data)
 
-    @staticmethod
-    def _now() -> float:
-        try:
-            return asyncio.get_running_loop().time()
-        except RuntimeError:
-            return time.monotonic()
 
-    def _available_slots(self) -> list[AISlot]:
-        now = self._now()
-        total = len(config.ai_slots)
-        if total == 0:
-            return []
-        available: list[AISlot] = []
-        for offset in range(total):
-            i = (self._cursor + offset) % total
-            slot = config.ai_slots[i]
-            if now >= self._cooldowns.get(slot.index, 0):
-                available.append(slot)
-        if not available:
-            print("[CONNECTOR] Todos en cooldown. Reseteando.")
-            self._cooldowns.clear()
-            available = list(config.ai_slots)
-        available.sort(key=lambda s: self._fail_count.get(s.index, 0))
-        return available
+async def start_http() -> web.AppRunner:
 
-    def _mark_failure(self, slot: AISlot, cooldown: float, reason: str) -> None:
-        self._cooldowns[slot.index] = self._now() + cooldown
-        self._fail_count[slot.index] = self._fail_count.get(slot.index, 0) + 1
-        print(f"[CONNECTOR] #{slot.index} → {reason} (cd {cooldown:.0f}s)")
+    app = web.Application()
 
-    def _mark_success(self, slot: AISlot) -> None:
-        self._cursor = slot.index
-        self._fail_count[slot.index] = 0
-        if self._last_used != slot.index:
-            print(f"[CONNECTOR] Usando slot #{slot.index}")
-            self._last_used = slot.index
+    app.router.add_get("/", root)
+    app.router.add_get("/health", health)
+    app.router.add_get("/api/health", health)
+    app.router.add_get("/api/status", health)
+    app.router.add_get("/metrics", metrics)
 
-    # ============================================================
-    # GEMINI NATIVO (con FIX error 400 + captura de finish_reason)
-    # ============================================================
+    runner = web.AppRunner(app)
+    await runner.setup()
 
-    @staticmethod
-    def _tools_to_gemini(tools: list[dict] | None) -> list[dict] | None:
-        if not tools:
-            return None
-        declarations = []
-        for t in tools:
-            fn = t.get("function", {})
-            declarations.append({
-                "name": fn.get("name", ""),
-                "description": fn.get("description", ""),
-                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
-            })
-        return [{"functionDeclarations": declarations}]
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        config.port,
+    )
+    await site.start()
 
-    @staticmethod
-    def _messages_to_gemini(messages: list[dict]) -> tuple[dict, list[dict]]:
-        system_parts: list[dict] = []
-        contents: list[dict] = []
+    print(f"HTTP server escuchando en puerto {config.port}")
+    return runner
 
-        for m in messages:
-            role = m.get("role")
-            content = m.get("content")
 
-            if role == "system":
-                if isinstance(content, str):
-                    system_parts.append({"text": content})
-                continue
+# ============================================================
+# HELPERS
+# ============================================================
 
-            if role == "tool":
-                tool_name = m.get("name") or m.get("tool_call_id") or "tool"
-                try:
-                    payload = json.loads(content) if isinstance(content, str) else content
-                except Exception:
-                    payload = {"result": str(content)}
-                contents.append({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": tool_name,
-                            "response": payload if isinstance(payload, dict) else {"result": payload},
-                        }
-                    }],
-                })
-                continue
+async def send_long(
+    chat: discord.Messageable,
+    text: str,
+) -> None:
+    text = text or "Sin respuesta."
+    for i in range(0, len(text), 1900):
+        await chat.send(text[i:i + 1900])
 
-            if role == "assistant" and m.get("tool_calls"):
-                parts = []
-                if content:
-                    parts.append({"text": content})
-                for idx, call in enumerate(m["tool_calls"]):
-                    fn = call.get("function", {})
-                    raw_args = fn.get("arguments", "{}")
-                    try:
-                        args_dict = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                    except Exception:
-                        args_dict = {}
-                    part = {
-                        "functionCall": {
-                            "name": fn.get("name", ""),
-                            "args": args_dict,
-                        }
-                    }
-                    # FIX ERROR 400: thought_signature obligatoria en la primera tool_call
-                    if idx == 0:
-                        part["thoughtSignature"] = "skip_thought_signature_validator"
-                    parts.append(part)
-                contents.append({"role": "model", "parts": parts})
-                continue
 
-            g_role = "model" if role == "assistant" else "user"
-            if isinstance(content, list):
-                parts = []
-                for block in content:
-                    if block.get("type") == "text":
-                        parts.append({"text": block["text"]})
-                    elif block.get("type") == "image_url":
-                        url = block["image_url"]["url"]
-                        if url.startswith("data:"):
-                            header, b64 = url.split(",", 1)
-                            mime = header.split(":")[1].split(";")[0]
-                            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
-                contents.append({"role": g_role, "parts": parts})
-            else:
-                contents.append({"role": g_role, "parts": [{"text": content or ""}]})
+async def should_reply(message: discord.Message) -> bool:
+    if message.author.bot:
+        return False
+    if message.author.id != config.allowed_user_id:
+        return False
+    if isinstance(message.channel, discord.DMChannel):
+        return True
+    return (
+        client.user is not None
+        and client.user in message.mentions
+    )
 
-        return {"parts": system_parts}, contents
 
-    @staticmethod
-    def _gemini_response_to_openai(data: dict, model: str) -> dict:
-        text = ""
-        tool_calls = []
-        finish_reason = "stop"
+async def extract_prompt(
+    message: discord.Message,
+) -> tuple[str, bool]:
 
-        candidates = data.get("candidates", [])
-        if candidates:
-            candidate = candidates[0]
-            finish_reason = str(candidate.get("finishReason", "stop")).lower()
-            parts = candidate.get("content", {}).get("parts", [])
-            for p in parts:
-                if "text" in p:
-                    text += p["text"]
-                if "functionCall" in p:
-                    fc = p["functionCall"]
-                    tool_calls.append({
-                        "id": f"call_{uuid.uuid4().hex[:24]}",
-                        "type": "function",
-                        "function": {
-                            "name": fc.get("name", ""),
-                            "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False),
-                        },
-                    })
+    content = message.content.strip()
+    flag_image = False
+    lowered = content.lower()
 
-        # FIX: si Gemini devolvió respuesta vacía, incluir el motivo como texto
-        if not text and not tool_calls:
-            if finish_reason in ("safety", "recitation", "blocked", "prohibited_content"):
-                text = f"⚠️ Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish_reason})."
-            elif finish_reason == "max_tokens":
-                text = "⚠️ La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
-            elif finish_reason == "other":
-                text = "⚠️ Gemini devolvió un error genérico. Prueba otra vez."
-            else:
-                text = f"⚠️ Gemini devolvió una respuesta vacía (finish_reason: {finish_reason})."
+    prefixes = (
+        "!image ", "/image ", "image: ",
+        "!imagen ", "/imagen ", "imagen: ",
+        "!draw ", "/draw ",
+        "genera: ", "dibuja: ",
+    )
 
-        message: dict[str, Any] = {"role": "assistant", "content": text or None}
-        if tool_calls:
-            message["tool_calls"] = tool_calls
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            return (content[len(prefix):].strip(), True)
 
-        return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "message": message,
-                "finish_reason": "tool_calls" if tool_calls else finish_reason,
-            }],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        }
+    if message.attachments:
+        flag_image = True
 
-    async def _call_gemini(
-        self,
-        slot: AISlot,
-        messages: list[dict],
-        tools: list[dict] | None,
-        session: aiohttp.ClientSession,
-    ) -> dict:
-        base_url = (os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-        if base_url.endswith("/openai"):
-            base_url = base_url[:-7]
-        model = slot.model or "gemini-flash-lite-latest"
-        endpoint = f"{base_url}/models/{model}:generateContent?key={slot.key}"
+    return (content.strip(), flag_image)
 
-        system_instruction, contents = self._messages_to_gemini(messages)
-        payload: dict[str, Any] = {"contents": contents}
-        if system_instruction["parts"]:
-            payload["systemInstruction"] = system_instruction
-        payload["generationConfig"] = {
-            "temperature": config.ai_temperature,
-            "maxOutputTokens": config.ai_max_tokens,
-        }
-        gemini_tools = self._tools_to_gemini(tools)
-        if gemini_tools:
-            payload["tools"] = gemini_tools
 
-        async with session.post(
-            endpoint,
-            headers={"Content-Type": "application/json"},
-            json=payload,
-        ) as response:
-            body = await response.text()
+# ============================================================
+# ADJUNTOS
+# ============================================================
 
-            if response.status == 200:
-                self._mark_success(slot)
-                try:
-                    data = json.loads(body)
-                except json.JSONDecodeError:
-                    raise RuntimeError(f"gemini respuesta no es JSON: {body[:200]}")
-                return self._gemini_response_to_openai(data, model)
+async def download_attachments(
+    message: discord.Message,
+) -> list[dict]:
 
-            if response.status == 429:
-                self._mark_failure(slot, 60, "429 quota")
-                raise RuntimeError("gemini 429")
-            if response.status in (401, 403):
-                self._mark_failure(slot, 300, f"{response.status} auth")
-                raise RuntimeError(f"gemini {response.status}")
-            if response.status == 400:
-                self._mark_failure(slot, 30, "400 payload")
-                raise RuntimeError(f"gemini 400: {body[:300]}")
-            if response.status == 404:
-                self._mark_failure(slot, 120, "404 modelo")
-                raise RuntimeError("gemini 404")
-            if response.status >= 500:
-                self._mark_failure(slot, 60, f"{response.status} server")
-                raise RuntimeError(f"gemini {response.status}")
+    if not message.attachments:
+        return []
 
-            self._mark_failure(slot, 60, f"{response.status}")
-            raise RuntimeError(f"gemini {response.status}: {body[:300]}")
+    uploads = Path(config.workspace) / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
 
-    # ============================================================
-    # OPENAI-COMPATIBLE (Groq, OpenAI, etc.)
-    # ============================================================
+    items: list[dict] = []
 
-    async def _call_openai_compat(
-        self,
-        slot: AISlot,
-        messages: list[dict],
-        tools: list[dict] | None,
-        model: str | None,
-        session: aiohttp.ClientSession,
-    ) -> dict:
-        forced = (
-            os.getenv(f"AI_PROVIDER_{slot.index}")
-            if slot.index > 0
-            else os.getenv("AI_PROVIDER")
-        )
-        provider, base_url = detect_provider(slot.key, forced)
+    async with aiohttp.ClientSession() as session:
+        for att in message.attachments:
+            safe_name = f"{message.id}_{att.filename}"
+            target = uploads / safe_name
 
-        payload = {
-            "model": slot.model or model or "",
-            "messages": messages,
-            "temperature": config.ai_temperature,
-            "max_tokens": config.ai_max_tokens,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-
-        endpoint = f"{base_url.rstrip('/')}/chat/completions"
-
-        async with session.post(
-            endpoint,
-            headers={
-                "Authorization": f"Bearer {slot.key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        ) as response:
-            body = await response.text()
-
-            if response.status == 200:
-                self._mark_success(slot)
-                try:
-                    return json.loads(body)
-                except json.JSONDecodeError:
-                    raise RuntimeError(f"{provider} respuesta no es JSON: {body[:200]}")
-
-            if response.status == 429:
-                self._mark_failure(slot, 30, "429 rate limit")
-                raise RuntimeError(f"{provider} 429")
-            if response.status in (401, 403):
-                self._mark_failure(slot, 300, f"{response.status} auth")
-                raise RuntimeError(f"{provider} {response.status}")
-            if response.status == 413:
-                self._mark_failure(slot, 60, "413 payload too large")
-                raise RuntimeError(f"{provider} 413")
-            if response.status == 404:
-                self._mark_failure(slot, 120, "404 modelo")
-                raise RuntimeError(f"{provider} 404")
-            if response.status >= 500:
-                self._mark_failure(slot, 60, f"{response.status} server")
-                raise RuntimeError(f"{provider} {response.status}")
-
-            self._mark_failure(slot, 60, f"{response.status}")
-            raise RuntimeError(f"{provider} {response.status}: {body[:200]}")
-
-    # ============================================================
-    # COMPLETE
-    # ============================================================
-
-    async def complete(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-    ) -> dict[str, Any]:
-
-        has_system = any(m.get("role") == "system" for m in messages)
-        if not has_system and self.system_prompt():
-            messages = [{"role": "system", "content": self.system_prompt()}, *messages]
-
-        cache_key_model = model or (config.ai_slots[0].model if config.ai_slots else "")
-        if not tools:
-            cached = self._cache.get(messages, cache_key_model)
-            if cached is not None:
-                print("[CONNECTOR] Cache hit")
-                return cached
-
-        slots = self._available_slots()
-        if not slots:
-            raise RuntimeError("No hay slots de IA configurados.")
-
-        session = await self._get_session()
-        last_error: Exception | None = None
-
-        for slot in slots:
-            forced = (
-                os.getenv(f"AI_PROVIDER_{slot.index}")
-                if slot.index > 0
-                else os.getenv("AI_PROVIDER")
-            )
-            provider, _ = detect_provider(slot.key, forced)
             try:
-                if provider == "gemini":
-                    result = await self._call_gemini(slot, messages, tools, session)
-                else:
-                    result = await self._call_openai_compat(slot, messages, tools, model, session)
-                if not tools:
-                    self._cache.set(messages, cache_key_model, result)
-                return result
-            except asyncio.CancelledError:
-                raise
-            except asyncio.TimeoutError:
-                last_error = RuntimeError("timeout")
-                continue
-            except aiohttp.ClientError as exc:
-                self._mark_failure(slot, 30, f"red: {type(exc).__name__}")
-                last_error = exc
-                continue
+                async with session.get(att.url) as resp:
+                    if resp.status >= 400:
+                        continue
+                    data = await resp.read()
+                    target.write_bytes(data)
+
+                    items.append({
+                        "path": str(target),
+                        "filename": att.filename,
+                        "content_type": att.content_type or "",
+                        "url": att.url,
+                        "size": len(data),
+                        "is_image": (
+                            (att.content_type or "").startswith("image/")
+                        ),
+                    })
+                    print(f"Adjunto guardado: {target}")
+
             except Exception as exc:
-                last_error = exc
-                continue
+                print(f"Error descargando {att.filename}: {exc}")
 
-        raise last_error or RuntimeError("Todos los slots fallaron.")
+    return items
 
-    def clean_tool_result(self, result: Any) -> str:
-        try:
-            if isinstance(result, str):
-                return result[:20000]
-            return json.dumps(result, ensure_ascii=False, default=str)[:20000]
-        except Exception:
-            return str(result)[:20000]
 
-    @property
-    def provider(self) -> str:
-        if config.ai_slots:
-            forced = (
-                os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}")
-                if config.ai_slots[0].index > 0
-                else os.getenv("AI_PROVIDER")
+# ============================================================
+# CONTEXTO
+# ============================================================
+
+def build_user_context(
+    message: discord.Message,
+    attachments: list[dict],
+) -> str:
+
+    user = message.author
+
+    lines = [
+        "[Contexto Discord]",
+        f"- Usuario: {user.display_name}",
+        f"- Nombre: {user.name}",
+        f"- ID: {user.id}",
+        f"- Avatar: {user.display_avatar.url}",
+        f"- Canal ID actual: {message.channel.id}",
+    ]
+
+    if message.guild:
+        lines.append(f"- Servidor: {message.guild.name}")
+        lines.append(f"- Servidor ID: {message.guild.id}")
+        lines.append(f"- Miembros: {message.guild.member_count}")
+
+        if message.guild.icon:
+            lines.append(f"- Icono servidor: {message.guild.icon.url}")
+
+    if isinstance(message.channel, discord.TextChannel):
+        lines.append(f"- Canal: #{message.channel.name}")
+
+        if message.channel.topic:
+            lines.append(f"- Tema del canal: {message.channel.topic}")
+
+    elif isinstance(message.channel, discord.DMChannel):
+        lines.append("- Canal: DM")
+
+    if attachments:
+        lines.append("- Archivos adjuntos del usuario:")
+
+        for att in attachments:
+            kind = "imagen" if att["is_image"] else "archivo"
+            lines.append(
+                f"  * [{kind}] {att['filename']} "
+                f"({att['content_type']}) "
+                f"-> ruta local: {att['path']}"
             )
-            p, _ = detect_provider(config.ai_slots[0].key, forced)
+
+        has_image = any(a["is_image"] for a in attachments)
+        has_pdf = any(
+            (a["content_type"] or "") == "application/pdf"
+            for a in attachments
+        )
+        has_text = any(
+            (a["content_type"] or "").startswith("text/")
+            for a in attachments
+        )
+
+        lines.append("")
+        lines.append("[Instrucciones]")
+
+        if has_image:
+            lines.append(
+                "- El usuario adjuntó una imagen. Analízala directamente."
+            )
+
+        if has_pdf:
+            lines.append(
+                "- El usuario adjuntó un PDF. Si necesitas leerlo, "
+                "usa file_read_pdf con la ruta local indicada."
+            )
+
+        if has_text:
+            lines.append(
+                "- El usuario adjuntó un archivo de texto. Si necesitas "
+                "leerlo, usa file_read_text o file_read_any con la "
+                "ruta local."
+            )
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# ENVÍO DE ARCHIVOS
+# ============================================================
+
+def _resolve_workspace_path(raw: str | Path) -> Path | None:
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+
+    p = Path(raw)
+
+    if p.is_absolute():
+        if p.exists() and p.is_file():
             return p
-        return "none"
+        return None
 
-    @property
-    def base_url(self) -> str:
-        if config.ai_slots:
-            forced = (
-                os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}")
-                if config.ai_slots[0].index > 0
-                else os.getenv("AI_PROVIDER")
-            )
-            _, u = detect_provider(config.ai_slots[0].key, forced)
-            return u
-        return ""
+    if p.exists() and p.is_file():
+        return p.resolve()
 
-    def stats(self) -> dict[str, Any]:
-        now = self._now()
-        result = []
-        for slot in config.ai_slots:
-            forced = (
-                os.getenv(f"AI_PROVIDER_{slot.index}")
-                if slot.index > 0
-                else os.getenv("AI_PROVIDER")
-            )
-            provider, _ = detect_provider(slot.key, forced)
-            cd = self._cooldowns.get(slot.index, 0)
-            result.append({
-                "slot": slot.index,
-                "provider": provider,
-                "model": slot.model,
-                "fallos": self._fail_count.get(slot.index, 0),
-                "cooldown_restante_s": max(0, round(cd - now, 1)),
-                "activo": now >= cd,
-            })
-        return {"cursor_actual": self._cursor, "cache": self._cache.stats(), "slots": result}
+    workspace_root = Path(config.workspace)
+    candidate = workspace_root / raw
+    if candidate.exists() and candidate.is_file():
+        return candidate.resolve()
+
+    candidate = workspace_root / p.name
+    if candidate.exists() and candidate.is_file():
+        return candidate.resolve()
+
+    candidate = workspace_root / "generated" / p.name
+    if candidate.exists() and candidate.is_file():
+        return candidate.resolve()
+
+    candidate = workspace_root / "uploads" / p.name
+    if candidate.exists() and candidate.is_file():
+        return candidate.resolve()
+
+    return None
 
 
-connector = AIConnector()
+async def send_files(
+    chat: discord.Messageable,
+    files: list,
+) -> None:
+
+    valid: list[discord.File] = []
+
+    for item in files:
+        try:
+            if isinstance(item, (str, Path)):
+                resolved = _resolve_workspace_path(item)
+                if resolved is not None:
+                    valid.append(discord.File(resolved))
+                    print(f"[SEND_FILES] OK: {item} -> {resolved}")
+                else:
+                    print(f"[SEND_FILES] NO ENCONTRADO: {item}")
+                    try:
+                        await chat.send(f"⚠️ No pude encontrar el archivo: `{item}`")
+                    except Exception:
+                        pass
+
+            elif isinstance(item, tuple) and len(item) == 2:
+                name, data = item
+                if isinstance(data, bytes):
+                    valid.append(
+                        discord.File(io.BytesIO(data), filename=name)
+                    )
+
+        except Exception as exc:
+            print(f"Error preparando archivo: {exc}")
+
+    for i in range(0, len(valid), 10):
+        batch = valid[i:i + 10]
+        try:
+            await chat.send(files=batch)
+            print(f"[SEND_FILES] Enviados {len(batch)} archivos")
+        except Exception as exc:
+            print(f"Error enviando lote: {exc}")
+
+
+# ============================================================
+# IMAGEN GENERADA
+# ============================================================
+
+async def send_generated_image(
+    chat: discord.Messageable,
+    image_url: str,
+) -> None:
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as resp:
+                if resp.status < 400:
+                    data = await resp.read()
+                    await chat.send(
+                        file=discord.File(
+                            io.BytesIO(data),
+                            filename="subtom.png",
+                        )
+                    )
+                    return
+
+                await chat.send(f"Imagen generada: {image_url}")
+
+    except Exception as exc:
+        print(f"Error descargando imagen generada: {exc}")
+        try:
+            await chat.send(f"Imagen generada: {image_url}")
+        except Exception:
+            pass
+
+
+# ============================================================
+# DISCORD EVENTS
+# ============================================================
+
+@client.event
+async def on_ready() -> None:
+    print(
+        f"{config.bot_name} | "
+        f"{len(config.ai_slots)} slots | "
+        f"principal: {connector.provider} | "
+        f"modelo: {config.ai_model}"
+    )
+
+
+@client.event
+async def on_message(message: discord.Message) -> None:
+
+    if not await should_reply(message):
+        return
+
+    prompt, flag_image = await extract_prompt(message)
+    attachments = await download_attachments(message)
+
+    if not prompt and not attachments:
+        await message.channel.send("No entendí tu mensaje.")
+        return
+
+    user_context = build_user_context(message, attachments)
+    full_prompt = f"{user_context}\n\n{prompt}".strip()
+
+    try:
+        await message.add_reaction("⏳")
+    except Exception:
+        pass
+
+    try:
+        result = await agent.ask(
+            message.author.id,
+            message.channel.id,
+            full_prompt,
+            force_image=flag_image,
+        )
+
+    except Exception as exc:
+        print(f"Error procesando mensaje: {exc}")
+        await message.channel.send(f"Error: {exc}")
+        return
+
+    finally:
+        try:
+            await message.remove_reaction("⏳", client.user)
+        except Exception:
+            pass
+
+    files = None
+
+    if isinstance(result, tuple) and len(result) == 3:
+        response, image_url, files = result
+    else:
+        response, image_url = result
+
+    if response:
+        await send_long(message.channel, response)
+
+    if files:
+        await send_files(message.channel, files)
+
+    if image_url and not files:
+        await send_generated_image(message.channel, image_url)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+async def main() -> None:
+
+    runner = None
+
+    try:
+        await agent.init()
+        runner = await start_http()
+        await client.start(config.discord_token)
+
+    finally:
+        print("Cerrando Subtom...")
+        await connector.close()
+        await agent.close()
+        await client.close()
+        if runner is not None:
+            await runner.cleanup()
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+    asyncio.run(main())
