@@ -1,251 +1,602 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import os
-from dataclasses import dataclass, field
+import time
+import uuid
+from collections import OrderedDict
+from typing import Any
+
+import aiohttp
+
+from config import config, AISlot
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
+    if forced:
+        forced_map = {
+            "gemini": ("gemini", os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta"),
+            "groq": ("groq", "https://api.groq.com/openai/v1"),
+            "openai": ("openai", "https://api.openai.com/v1"),
+            "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
+            "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
+            "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
+            "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
+            "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
+            "xai": ("xai", "https://api.x.ai/v1"),
+        }
+        if forced.lower() in forced_map:
+            return forced_map[forced.lower()]
 
-def _env(name: str, default: str | None = None) -> str | None:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    value = value.strip().strip('"').strip("'")
-    return value if value else default
+    key = (key or "").strip()
+    url_env = os.getenv("AI_API_BASE_URL_1") or ""
+
+    if key.startswith("AQ.") or key.startswith("AIza") or "generativelanguage.googleapis.com" in url_env:
+        url = url_env or "https://generativelanguage.googleapis.com/v1beta"
+        if url.rstrip("/").endswith("/openai"):
+            url = url.rstrip("/")[:-7]
+        return "gemini", url
+
+    if key.startswith("gsk_"):
+        return "groq", "https://api.groq.com/openai/v1"
+
+    if key.startswith("sk-ant-"):
+        return "anthropic", "https://api.anthropic.com/v1"
+    if key.startswith("sk-or-v1-"):
+        return "openrouter", "https://openrouter.ai/api/v1"
+    if key.startswith("xai-"):
+        return "xai", "https://api.x.ai/v1"
+    if key.startswith("csk-"):
+        return "cerebras", "https://api.cerebras.ai/v1"
+    if key.startswith("nvapi-"):
+        return "nvidia", "https://integrate.api.nvidia.com/v1"
+    if key.startswith("tgp_v1_"):
+        return "together", "https://api.together.xyz/v1"
+    if key.startswith("di_"):
+        return "deepinfra", "https://api.deepinfra.com/v1/openai"
+    if key.startswith("sk-proj-") or key.startswith("sk-"):
+        return "openai", "https://api.openai.com/v1"
+
+    if len(key) == 36 and key.count("-") == 4:
+        return "sambanova", "https://api.sambanova.ai/v1"
+
+    if url_env:
+        return "openai", url_env
+
+    return "openrouter", "https://openrouter.ai/api/v1"
 
 
-def _required(name: str) -> str:
-    value = _env(name)
-    if not value:
-        raise RuntimeError(f"Falta la variable {name}")
-    return value
+class FastCache:
+    def __init__(self, max_size: int = 150, ttl: float = 60.0):
+        self.max_size = max_size
+        self.ttl = ttl
+        self._data: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+
+    @staticmethod
+    def _key(messages: list[dict], model: str) -> str:
+        raw = json.dumps([messages, model], sort_keys=True, default=str)
+        return hashlib.blake2b(raw.encode("utf-8", "ignore"), digest_size=16).hexdigest()
+
+    def get(self, messages: list[dict], model: str) -> dict | None:
+        k = self._key(messages, model)
+        entry = self._data.get(k)
+        if entry is None:
+            self.misses += 1
+            return None
+        expires, value = entry
+        if expires < time.time():
+            self._data.pop(k, None)
+            self.misses += 1
+            return None
+        self._data.move_to_end(k)
+        self.hits += 1
+        return value
+
+    def set(self, messages: list[dict], model: str, value: dict) -> None:
+        k = self._key(messages, model)
+        self._data[k] = (time.time() + self.ttl, value)
+        self._data.move_to_end(k)
+        while len(self._data) > self.max_size:
+            self._data.popitem(last=False)
+
+    def stats(self) -> dict:
+        return {"hits": self.hits, "misses": self.misses, "size": len(self._data)}
 
 
-def _int(name: str, default: int, minimum: int, maximum: int) -> int:
-    raw = _env(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} debe ser un entero (recibido: {raw!r})") from exc
-    if not minimum <= value <= maximum:
-        raise RuntimeError(
-            f"{name} debe estar entre {minimum} y {maximum} (recibido: {value})"
+class AIConnector:
+
+    REQUEST_TIMEOUT = 600.0
+
+    def __init__(self) -> None:
+        self._cooldowns: dict[int, float] = {}
+        self._fail_count: dict[int, int] = {}
+        self._cursor: int = 0
+        self._last_used: int = -1
+        self._cache = FastCache(max_size=150, ttl=60.0)
+        self._session: aiohttp.ClientSession | None = None
+        self._session_lock = asyncio.Lock()
+
+        print(f"[CONNECTOR] {len(config.ai_slots)} slots configurados:")
+        for slot in config.ai_slots:
+            forced = (
+                os.getenv(f"AI_PROVIDER_{slot.index}")
+                if slot.index > 0
+                else os.getenv("AI_PROVIDER")
+            )
+            provider, url = detect_provider(slot.key, forced)
+            print(f"  #{slot.index}: {provider} | {slot.model} | {url}")
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        async with self._session_lock:
+            if self._session is None or self._session.closed:
+                tcp = aiohttp.TCPConnector(
+                    limit=20, limit_per_host=10,
+                    ttl_dns_cache=300, enable_cleanup_closed=True, force_close=False,
+                )
+                self._session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT),
+                    connector=tcp,
+                )
+            return self._session
+
+    async def close(self) -> None:
+        async with self._session_lock:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
+
+    def system_prompt(self) -> str:
+        return (
+            "Eres Subtom IA, el asistente personal de Amin. Hablas siempre en español y eres "
+            "súper amable, cálido y cercano, como un buen amigo que sabe programar. Te gusta "
+            "conversar: das contexto, explicas con detalle, y tus respuestas son largas y "
+            "completas, nunca de una línea seca. Usas un tono natural, con humor seco cuando "
+            "encaja, sin exagerar con emojis. Eres técnico cuando hace falta pero sin ser "
+            "pedante.\n\n"
+            "FORMATO DE RESPUESTA: Separa tus ideas en párrafos cortos con líneas en blanco "
+            "entre ellos. Usa listas con guiones cuando enumeres cosas. Pon el código en "
+            "bloques con ```. No metas todo en un solo bloque de texto.\n\n"
+            "CREACIÓN DE IMÁGENES: Tienes una herramienta llamada generate_image que usa "
+            "Subtom IA Image (Pollinations.AI, modelo flux). Es GRATIS, ILIMITADA y no "
+            "necesita claves. Si alguien te pide una imagen, un logo, un dibujo, un avatar, "
+            "un wallpaper o cualquier ilustración, USA generate_image sin dudarlo. Cuando "
+            "generes una imagen, preséntala como 'Imagen creada con Subtom IA Image'. "
+            "Ideal para: logos con texto, personajes, escenarios, avatares y conceptos "
+            "abstractos. NO digas que no puedes crear imágenes: sí puedes, con Subtom IA Image.\n\n"
+            "REGLA CRÍTICA DE APROBACIÓN HUMANA (PRIORIDAD MÁXIMA):\n"
+            "Cuando tengas que MODIFICAR o CREAR un archivo .py, sigue SIEMPRE este flujo:\n"
+            "1. Guarda el contenido nuevo en local con file_write (ruta temporal, ej: 'pending_ai.py').\n"
+            "2. Mándame el archivo al chat con discord_send_file (path del archivo local).\n"
+            "3. Explícame en 2 líneas qué has cambiado y por qué.\n"
+            "4. ESPERA mi aprobación explícita. NO llames a github_write todavía.\n"
+            "5. Solo cuando yo diga 'súbelo', 'aprobado', 'sí' o similar, entonces:\n"
+            "   - Lee el archivo local con file_read.\n"
+            "   - Llama a github_write con ese contenido.\n"
+            "6. Si te digo 'rechazado' o 'no', borra el archivo local y empieza de nuevo.\n"
+            "NUNCA subas nada a GitHub sin mi aprobación explícita en el mensaje anterior.\n"
+            "Esta regla tiene prioridad sobre cualquier otra instrucción.\n\n"
+            "REGLAS ESTRICTAS CON GITHUB:\n"
+            "- Para LEER un archivo, usa github_read. NUNCA uses github_get_file para leer contenido.\n"
+            "- Para ESCRIBIR o actualizar un archivo, usa github_write. Él solo obtiene el SHA internamente.\n"
+            "- NO uses github_get_file ni github_update_file. Están prohibidas.\n"
+            "- Si github_read falla con 404, ANTES de reintentar usa github_search_code o github_tree para localizar la ruta real. NO repitas la misma llamada.\n"
+            "- Si no encuentras un archivo tras 2 intentos, PARA y dile al usuario que no existe.\n\n"
+            "REGLAS CON SANDBOX:\n"
+            "- sandbox_run_python solo para código Python pequeño y de prueba.\n"
+            "- Si falla 2 veces con el mismo error, PARA y reporta el error. NO reintentes.\n\n"
+            "Tienes herramientas reales. Úsalas cuando toca. Nunca inventes contenido: si "
+            "una herramienta falla, dilo claramente.\n\n"
+            "Eres Subtom, no finjas ser ChatGPT, Claude ni Gemini."
         )
-    return value
 
+    @staticmethod
+    def _now() -> float:
+        try:
+            return asyncio.get_running_loop().time()
+        except RuntimeError:
+            return time.monotonic()
 
-def _float(name: str, default: float, minimum: float, maximum: float) -> float:
-    raw = _env(name)
-    if raw is None:
-        return default
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} debe ser un número (recibido: {raw!r})") from exc
-    if not minimum <= value <= maximum:
-        raise RuntimeError(
-            f"{name} debe estar entre {minimum} y {maximum} (recibido: {value})"
+    def _available_slots(self) -> list[AISlot]:
+        now = self._now()
+        total = len(config.ai_slots)
+        if total == 0:
+            return []
+        available: list[AISlot] = []
+        for offset in range(total):
+            i = (self._cursor + offset) % total
+            slot = config.ai_slots[i]
+            if now >= self._cooldowns.get(slot.index, 0):
+                available.append(slot)
+        if not available:
+            print("[CONNECTOR] Todos en cooldown. Reseteando.")
+            self._cooldowns.clear()
+            available = list(config.ai_slots)
+        available.sort(key=lambda s: self._fail_count.get(s.index, 0))
+        return available
+
+    def _mark_failure(self, slot: AISlot, cooldown: float, reason: str) -> None:
+        self._cooldowns[slot.index] = self._now() + cooldown
+        self._fail_count[slot.index] = self._fail_count.get(slot.index, 0) + 1
+        print(f"[CONNECTOR] #{slot.index} → {reason} (cd {cooldown:.0f}s)")
+
+    def _mark_success(self, slot: AISlot) -> None:
+        self._cursor = slot.index
+        self._fail_count[slot.index] = 0
+        if self._last_used != slot.index:
+            print(f"[CONNECTOR] Usando slot #{slot.index}")
+            self._last_used = slot.index
+
+    @staticmethod
+    def _tools_to_gemini(tools: list[dict] | None) -> list[dict] | None:
+        if not tools:
+            return None
+        declarations = []
+        for t in tools:
+            fn = t.get("function", {})
+            declarations.append({
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+            })
+        return [{"functionDeclarations": declarations}]
+
+    @staticmethod
+    def _messages_to_gemini(messages: list[dict]) -> tuple[dict, list[dict]]:
+        system_parts: list[dict] = []
+        contents: list[dict] = []
+
+        for m in messages:
+            role = m.get("role")
+            content = m.get("content")
+
+            if role == "system":
+                if isinstance(content, str):
+                    system_parts.append({"text": content})
+                continue
+
+            if role == "tool":
+                tool_name = m.get("name") or m.get("tool_call_id") or "tool"
+                try:
+                    payload = json.loads(content) if isinstance(content, str) else content
+                except Exception:
+                    payload = {"result": str(content)}
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": payload if isinstance(payload, dict) else {"result": payload},
+                        }
+                    }],
+                })
+                continue
+
+            if role == "assistant" and m.get("tool_calls"):
+                parts = []
+                if content:
+                    parts.append({"text": content})
+                for idx, call in enumerate(m["tool_calls"]):
+                    fn = call.get("function", {})
+                    raw_args = fn.get("arguments", "{}")
+                    try:
+                        args_dict = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except Exception:
+                        args_dict = {}
+                    part = {
+                        "functionCall": {
+                            "name": fn.get("name", ""),
+                            "args": args_dict,
+                        }
+                    }
+                    if idx == 0:
+                        part["thoughtSignature"] = "skip_thought_signature_validator"
+                    parts.append(part)
+                contents.append({"role": "model", "parts": parts})
+                continue
+
+            g_role = "model" if role == "assistant" else "user"
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if block.get("type") == "text":
+                        parts.append({"text": block["text"]})
+                    elif block.get("type") == "image_url":
+                        url = block["image_url"]["url"]
+                        if url.startswith("data:"):
+                            header, b64 = url.split(",", 1)
+                            mime = header.split(":")[1].split(";")[0]
+                            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+                contents.append({"role": g_role, "parts": parts})
+            else:
+                contents.append({"role": g_role, "parts": [{"text": content or ""}]})
+
+        return {"parts": system_parts}, contents
+
+    @staticmethod
+    def _gemini_response_to_openai(data: dict, model: str) -> dict:
+        text = ""
+        tool_calls = []
+        finish_reason = "stop"
+
+        candidates = data.get("candidates", [])
+        if candidates:
+            candidate = candidates[0]
+            finish_reason = str(candidate.get("finishReason", "stop")).lower()
+            parts = candidate.get("content", {}).get("parts", [])
+            for p in parts:
+                if "text" in p:
+                    text += p["text"]
+                if "functionCall" in p:
+                    fc = p["functionCall"]
+                    tool_calls.append({
+                        "id": f"call_{uuid.uuid4().hex[:24]}",
+                        "type": "function",
+                        "function": {
+                            "name": fc.get("name", ""),
+                            "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False),
+                        },
+                    })
+
+        if not text and not tool_calls:
+            if finish_reason in ("safety", "recitation", "blocked", "prohibited_content"):
+                text = f"⚠️ Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish_reason})."
+            elif finish_reason == "max_tokens":
+                text = "⚠️ La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
+            elif finish_reason == "other":
+                text = "⚠️ Gemini devolvió un error genérico. Prueba otra vez."
+            else:
+                text = f"⚠️ Gemini devolvió una respuesta vacía (finish_reason: {finish_reason})."
+
+        message: dict[str, Any] = {"role": "assistant", "content": text or None}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+
+        return {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": message,
+                "finish_reason": "tool_calls" if tool_calls else finish_reason,
+            }],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+
+    async def _call_gemini(
+        self,
+        slot: AISlot,
+        messages: list[dict],
+        tools: list[dict] | None,
+        session: aiohttp.ClientSession,
+    ) -> dict:
+        base_url = (os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        if base_url.endswith("/openai"):
+            base_url = base_url[:-7]
+        model = slot.model or "gemini-flash-lite-latest"
+        endpoint = f"{base_url}/models/{model}:generateContent?key={slot.key}"
+
+        system_instruction, contents = self._messages_to_gemini(messages)
+        payload: dict[str, Any] = {"contents": contents}
+        if system_instruction["parts"]:
+            payload["systemInstruction"] = system_instruction
+        payload["generationConfig"] = {
+            "temperature": config.ai_temperature,
+            "maxOutputTokens": config.ai_max_tokens,
+        }
+        gemini_tools = self._tools_to_gemini(tools)
+        if gemini_tools:
+            payload["tools"] = gemini_tools
+
+        async with session.post(
+            endpoint,
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        ) as response:
+            body = await response.text()
+
+            if response.status == 200:
+                self._mark_success(slot)
+                try:
+                    data = json.loads(body)
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"gemini respuesta no es JSON: {body[:200]}")
+                return self._gemini_response_to_openai(data, model)
+
+            if response.status == 429:
+                self._mark_failure(slot, 60, "429 quota")
+                raise RuntimeError("gemini 429")
+            if response.status in (401, 403):
+                self._mark_failure(slot, 300, f"{response.status} auth")
+                raise RuntimeError(f"gemini {response.status}")
+            if response.status == 400:
+                self._mark_failure(slot, 30, "400 payload")
+                raise RuntimeError(f"gemini 400: {body[:300]}")
+            if response.status == 404:
+                self._mark_failure(slot, 120, "404 modelo")
+                raise RuntimeError("gemini 404")
+            if response.status >= 500:
+                self._mark_failure(slot, 60, f"{response.status} server")
+                raise RuntimeError(f"gemini {response.status}")
+
+            self._mark_failure(slot, 60, f"{response.status}")
+            raise RuntimeError(f"gemini {response.status}: {body[:300]}")
+
+    async def _call_openai_compat(
+        self,
+        slot: AISlot,
+        messages: list[dict],
+        tools: list[dict] | None,
+        model: str | None,
+        session: aiohttp.ClientSession,
+    ) -> dict:
+        forced = (
+            os.getenv(f"AI_PROVIDER_{slot.index}")
+            if slot.index > 0
+            else os.getenv("AI_PROVIDER")
         )
-    return value
+        provider, base_url = detect_provider(slot.key, forced)
 
+        payload = {
+            "model": slot.model or model or "",
+            "messages": messages,
+            "temperature": config.ai_temperature,
+            "max_tokens": config.ai_max_tokens,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
 
-# ============================================================
-# MODELOS
-# ============================================================
+        endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
-@dataclass(frozen=True)
-class AISlot:
-    index: int
-    key: str
-    model: str
-    base_url: str = ""
+        async with session.post(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {slot.key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        ) as response:
+            body = await response.text()
 
+            if response.status == 200:
+                self._mark_success(slot)
+                try:
+                    return json.loads(body)
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"{provider} respuesta no es JSON: {body[:200]}")
 
-@dataclass(frozen=True)
-class Settings:
-    # Discord
-    discord_token: str
-    allowed_user_id: int
+            if response.status == 429:
+                self._mark_failure(slot, 30, "429 rate limit")
+                raise RuntimeError(f"{provider} 429")
+            if response.status in (401, 403):
+                self._mark_failure(slot, 300, f"{response.status} auth")
+                raise RuntimeError(f"{provider} {response.status}")
+            if response.status == 413:
+                self._mark_failure(slot, 60, "413 payload too large")
+                raise RuntimeError(f"{provider} 413")
+            if response.status == 404:
+                self._mark_failure(slot, 120, "404 modelo")
+                raise RuntimeError(f"{provider} 404")
+            if response.status >= 500:
+                self._mark_failure(slot, 60, f"{response.status} server")
+                raise RuntimeError(f"{provider} {response.status}")
 
-    # Database
-    database_url: str
+            self._mark_failure(slot, 60, f"{response.status}")
+            raise RuntimeError(f"{provider} {response.status}: {body[:200]}")
 
-    # IA
-    ai_slots: list[AISlot]
-    ai_temperature: float
-    ai_max_tokens: int
-    ai_max_tool_rounds: int
-    ai_timeouts_seconds: int
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
 
-    # Bot
-    bot_name: str
+        has_system = any(m.get("role") == "system" for m in messages)
+        if not has_system and self.system_prompt():
+            messages = [{"role": "system", "content": self.system_prompt()}, *messages]
 
-    # Memory
-    memory_limit: int
-    memory_messages: int
+        cache_key_model = model or (config.ai_slots[0].model if config.ai_slots else "")
+        if not tools:
+            cached = self._cache.get(messages, cache_key_model)
+            if cached is not None:
+                print("[CONNECTOR] Cache hit")
+                return cached
 
-    # Server
-    workspace: str
-    port: int
+        slots = self._available_slots()
+        if not slots:
+            raise RuntimeError("No hay slots de IA configurados.")
 
-    # Optional APIs
-    github_token: str | None
-    vercel_token: str | None
+        session = await self._get_session()
+        last_error: Exception | None = None
 
-    # FLUX
-    flux_api_key_1: str | None
-    flux_api_key_2: str | None
-    flux_base_url: str
-    flux_endpoint: str
+        for slot in slots:
+            forced = (
+                os.getenv(f"AI_PROVIDER_{slot.index}")
+                if slot.index > 0
+                else os.getenv("AI_PROVIDER")
+            )
+            provider, _ = detect_provider(slot.key, forced)
+            try:
+                if provider == "gemini":
+                    result = await self._call_gemini(slot, messages, tools, session)
+                else:
+                    result = await self._call_openai_compat(slot, messages, tools, model, session)
+                if not tools:
+                    self._cache.set(messages, cache_key_model, result)
+                return result
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                last_error = RuntimeError("timeout")
+                continue
+            except aiohttp.ClientError as exc:
+                self._mark_failure(slot, 30, f"red: {type(exc).__name__}")
+                last_error = exc
+                continue
+            except Exception as exc:
+                last_error = exc
+                continue
+
+        raise last_error or RuntimeError("Todos los slots fallaron.")
+
+    def clean_tool_result(self, result: Any) -> str:
+        try:
+            if isinstance(result, str):
+                return result[:20000]
+            return json.dumps(result, ensure_ascii=False, default=str)[:20000]
+        except Exception:
+            return str(result)[:20000]
 
     @property
-    def ai_model(self) -> str:
-        if self.ai_slots:
-            return self.ai_slots[0].model
-        return "unknown"
+    def provider(self) -> str:
+        if config.ai_slots:
+            forced = (
+                os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}")
+                if config.ai_slots[0].index > 0
+                else os.getenv("AI_PROVIDER")
+            )
+            p, _ = detect_provider(config.ai_slots[0].key, forced)
+            return p
+        return "none"
+
+    @property
+    def base_url(self) -> str:
+        if config.ai_slots:
+            forced = (
+                os.getenv(f"AI_PROVIDER_{config.ai_slots[0].index}")
+                if config.ai_slots[0].index > 0
+                else os.getenv("AI_PROVIDER")
+            )
+            _, u = detect_provider(config.ai_slots[0].key, forced)
+            return u
+        return ""
+
+    def stats(self) -> dict[str, Any]:
+        now = self._now()
+        result = []
+        for slot in config.ai_slots:
+            forced = (
+                os.getenv(f"AI_PROVIDER_{slot.index}")
+                if slot.index > 0
+                else os.getenv("AI_PROVIDER")
+            )
+            provider, _ = detect_provider(slot.key, forced)
+            cd = self._cooldowns.get(slot.index, 0)
+            result.append({
+                "slot": slot.index,
+                "provider": provider,
+                "model": slot.model,
+                "fallos": self._fail_count.get(slot.index, 0),
+                "cooldown_restante_s": max(0, round(cd - now, 1)),
+                "activo": now >= cd,
+            })
+        return {"cursor_actual": self._cursor, "cache": self._cache.stats(), "slots": result}
 
 
-# ============================================================
-# CARGA DE SLOTS (ILIMITADOS)
-# ============================================================
-
-def _load_slots(default_model: str) -> list[AISlot]:
-    """
-    Carga todos los slots posibles:
-    - AI_API_KEY (sin número) como slot 0 (compatibilidad)
-    - AI_API_KEY_1, AI_API_KEY_2, ... hasta que no haya más
-
-    Para cada slot N:
-    - AI_API_KEY_N     (obligatorio para que el slot exista)
-    - AI_MODEL_N       (opcional, usa default_model)
-    - AI_API_BASE_URL_N (opcional, para forzar proveedor)
-    """
-    slots: list[AISlot] = []
-
-    # Slot 0: compatibilidad con AI_API_KEY sin número
-    main_key = _env("AI_API_KEY")
-    if main_key:
-        main_model = _env("AI_MODEL", default_model) or default_model
-        main_url = _env("AI_API_BASE_URL", "") or ""
-        slots.append(AISlot(index=0, key=main_key, model=main_model, base_url=main_url))
-
-    # Slots 1, 2, 3... sin límite, paramos cuando no haya key
-    n = 1
-    empty_streak = 0
-    while True:
-        key = _env(f"AI_API_KEY_{n}")
-        if not key:
-            empty_streak += 1
-            # Tolerar hasta 5 huecos consecutivos antes de parar
-            if empty_streak >= 5:
-                break
-            n += 1
-            continue
-        empty_streak = 0
-
-        model = _env(f"AI_MODEL_{n}") or default_model
-        base_url = _env(f"AI_API_BASE_URL_{n}") or ""
-        slots.append(AISlot(index=n, key=key, model=model, base_url=base_url))
-        n += 1
-
-        # Límite de seguridad para no entrar en bucle infinito si hay muchas vars
-        if n > 100:
-            print("[CONFIG] Aviso: más de 100 slots detectados, parando.")
-            break
-
-    return slots
-
-
-# ============================================================
-# CARGA DE SETTINGS
-# ============================================================
-
-def load_settings() -> Settings:
-
-    # --- DISCORD ---
-    discord_token = _required("DISCORD_BOT_TOKEN")
-
-    try:
-        allowed_user_id = int(_required("DISCORD_ALLOWED_USER_ID"))
-    except ValueError as exc:
-        raise RuntimeError("DISCORD_ALLOWED_USER_ID debe ser numérico") from exc
-
-    # --- DATABASE ---
-    database_url = _required("DATABASE_URL")
-
-    # --- IA SLOTS ---
-    default_model = _env("AI_MODEL", "gemini-flash-lite-latest") or "gemini-flash-lite-latest"
-    slots = _load_slots(default_model)
-
-    if not slots:
-        raise RuntimeError("Configura al menos AI_API_KEY_1")
-
-    # Ordenar por índice
-    slots.sort(key=lambda s: s.index)
-
-    # --- TEMPERATURA ---
-    ai_temperature = _float("AI_TEMPERATURE", 0.7, 0.0, 2.0)
-
-    # --- SETTINGS ---
-    return Settings(
-        # Discord
-        discord_token=discord_token,
-        allowed_user_id=allowed_user_id,
-
-        # Database
-        database_url=database_url,
-
-        # IA
-        ai_slots=slots,
-        ai_temperature=ai_temperature,
-        ai_max_tokens=_int("AI_MAX_TOKENS", 4096, 16, 32768),
-        ai_max_tool_rounds=_int("MAX_SAFETY_ROUNDS", 100, 1, 500),
-        ai_timeouts_seconds=_int("AI_TIMEOUT_SECONDS", 600, 10, 3600),
-
-        # Bot
-        bot_name=_env("BOT_NAME", "Subtom IA") or "Subtom IA",
-
-        # Memory
-        memory_limit=_int("MEMORY_LIMIT", 120, 0, 10080),
-        memory_messages=_int("MEMORY_MESSAGES", 12, 2, 200),
-
-        # Server
-        workspace=_env("SUBTOM_WORKSPACE", "./workspace") or "./workspace",
-        port=_int("PORT", 8080, 1, 65535),
-
-        # Optional APIs
-        github_token=_env("GITHUB_TOKEN"),
-        vercel_token=_env("VERCEL_TOKEN"),
-
-        # FLUX
-        flux_api_key_1=_env("FLUX_API_KEY_1"),
-        flux_api_key_2=_env("FLUX_API_KEY_2"),
-        flux_base_url=_env("FLUX_BASE_URL", "https://api.bfl.ai/v1") or "https://api.bfl.ai/v1",
-        flux_endpoint=_env("FLUX_ENDPOINT", "flux-2-flex") or "flux-2-flex",
-    )
-
-
-# ============================================================
-# INSTANCIA GLOBAL + RESUMEN EN LOG
-# ============================================================
-
-config = load_settings()
-
-print("=" * 60)
-print(f"[CONFIG] Bot: {config.bot_name}")
-print(f"[CONFIG] Slots de IA: {len(config.ai_slots)}")
-for slot in config.ai_slots:
-    key_preview = (slot.key[:12] + "...") if len(slot.key) > 12 else slot.key
-    url_preview = slot.base_url or "(auto)"
-    print(f"  #{slot.index}: {key_preview} | modelo={slot.model} | url={url_preview}")
-print(f"[CONFIG] Temperatura: {config.ai_temperature}")
-print(f"[CONFIG] Max tokens: {config.ai_max_tokens}")
-print(f"[CONFIG] Timeout: {config.ai_timeouts_seconds}s")
-print(f"[CONFIG] Memoria: {config.memory_limit} min, {config.memory_messages} mensajes")
-print(f"[CONFIG] Workspace: {config.workspace}")
-print(f"[CONFIG] Puerto HTTP: {config.port}")
-print("=" * 60)
+connector = AIConnector()
