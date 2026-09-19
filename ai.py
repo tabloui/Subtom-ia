@@ -24,7 +24,6 @@ IMAGE_EXTENSIONS = {
 
 REPO_PRINCIPAL = "tabloui/subtom-ia"
 
-# Límite duro de líneas por tool call (Gemini rompe el JSON a partir de ~60)
 MAX_LINES_PER_TOOL_CALL = 50
 
 
@@ -164,7 +163,7 @@ class Agent:
     # ================================================================
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
-            # ============ WEB ============
+            # WEB
             {"type": "function", "function": {
                 "name": "web_search",
                 "description": "Busca en internet con DuckDuckGo.",
@@ -182,7 +181,7 @@ class Agent:
                 }, "required": ["url"]},
             }},
 
-            # ============ ARCHIVOS ============
+            # ARCHIVOS
             {"type": "function", "function": {
                 "name": "file_list",
                 "description": "Lista archivos y carpetas del workspace.",
@@ -199,8 +198,7 @@ class Agent:
                 "name": "file_write",
                 "description": (
                     "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 50 líneas por llamada. "
-                    "Si el archivo es más grande, divídelo en bloques de 50 líneas. "
-                    "NUNCA pongas más de 50 líneas en 'content'."
+                    "Si el archivo es más grande, divídelo en bloques de 50 líneas."
                 ),
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
@@ -273,7 +271,7 @@ class Agent:
                 "parameters": {"type": "object", "properties": {"directory": {"type": "string", "default": "."}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["old", "new"]},
             }},
 
-            # ============ GITHUB ============
+            # GITHUB
             {"type": "function", "function": {
                 "name": "github_search_code",
                 "description": "PASO 1 OBLIGATORIO: busca archivos o código en GitHub antes de github_read.",
@@ -315,8 +313,7 @@ class Agent:
                 "name": "github_write",
                 "description": (
                     "Escribe un archivo en GitHub. LÍMITE DURO: máximo 50 líneas en 'content'. "
-                    "Para archivos grandes usa file_write + file_append y luego github_upload_project. "
-                    "NUNCA pongas más de 50 líneas en 'content'."
+                    "Para archivos grandes usa file_write + file_append y luego github_upload_project."
                 ),
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
@@ -336,9 +333,6 @@ class Agent:
                 "description": (
                     "Sube UNO O VARIOS archivos a GitHub usando la Git Data API. "
                     "USA ESTO para subir archivos grandes (más de 50 líneas) que ya tienes en el workspace. "
-                    "EJEMPLO: 1) file_write(path='pending_bot.py', content='<50 líneas>'), "
-                    "2) file_append(path='pending_bot.py', content='<50 líneas>') x4, "
-                    "3) github_upload_project(repo='tabloui/subtom-ia', files={'bot.py': 'pending_bot.py'}, message='Update bot.py'). "
                     "Parámetro 'files': diccionario {ruta_en_repo: ruta_local}."
                 ),
                 "parameters": {"type": "object", "properties": {
@@ -409,7 +403,7 @@ class Agent:
                 "parameters": {"type": "object", "properties": {"repo": {"type": "string"}}, "required": ["repo"]},
             }},
 
-            # ============ VERCEL ============
+            # VERCEL
             {"type": "function", "function": {
                 "name": "vercel_projects",
                 "description": "Lista tus proyectos de Vercel.",
@@ -431,16 +425,16 @@ class Agent:
                 "parameters": {"type": "object", "properties": {"project": {"type": "string"}, "target": {"type": "string", "default": "production"}}, "required": ["project"]},
             }},
 
-            # ============ IMAGEN ============
+            # IMAGEN
             {"type": "function", "function": {
                 "name": "generate_image",
                 "description": "Genera una imagen con Subtom IA Image (Pollinations.AI, modelo flux). La imagen se envía automáticamente al chat.",
                 "parameters": {"type": "object", "properties": {
-                    "prompt": {"type": "string", "description": "Descripción detallada en inglés"},
+                    "prompt": {"type": "string"},
                 }, "required": ["prompt"]},
             }},
 
-            # ============ SANDBOX ============
+            # SANDBOX
             {"type": "function", "function": {
                 "name": "sandbox_run_python",
                 "description": "Ejecuta código Python en sandbox.",
@@ -512,7 +506,7 @@ class Agent:
                 "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_content": {"type": "string"}, "new_content": {"type": "string"}}, "required": ["file_path", "old_content", "new_content"]},
             }},
 
-            # ============ DISCORD ============
+            # DISCORD
             {"type": "function", "function": {
                 "name": "discord_send_message",
                 "description": "Envía un mensaje a un canal.",
@@ -625,7 +619,7 @@ class Agent:
     # ================================================================
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
-            # GUARD: rechaza bloques > MAX_LINES_PER_TOOL_CALL sin parar el bot
+            # GUARD
             if name in ("file_write", "file_append", "github_write"):
                 content = args.get("content", "")
                 if isinstance(content, str):
@@ -654,9 +648,28 @@ class Agent:
             if name == "file_read":
                 return {"content": self.files.read_file(args["path"])}
             if name == "file_write":
-                return {"path": self.files.write_file(args["path"], args["content"])}
+                filepath = self.files.write_file(args["path"], args["content"])
+                content_written = args.get("content", "")
+                lines_written = content_written.count("\n") + 1
+                return {
+                    "path": filepath,
+                    "lines_written": lines_written,
+                    "hash": hashlib.blake2b(content_written.encode("utf-8", "ignore"), digest_size=4).hexdigest(),
+                }
             if name == "file_append":
-                return {"path": self.files.append_file(args["path"], args["content"])}
+                filepath = self.files.append_file(args["path"], args["content"])
+                content_added = args.get("content", "")
+                lines_added = content_added.count("\n") + 1
+                try:
+                    total_lines = len(Path(filepath).read_text(encoding="utf-8").splitlines())
+                except Exception:
+                    total_lines = 0
+                return {
+                    "path": filepath,
+                    "lines_added": lines_added,
+                    "total_lines": total_lines,
+                    "hash": hashlib.blake2b(content_added.encode("utf-8", "ignore"), digest_size=4).hexdigest(),
+                }
             if name == "file_search":
                 return {"matches": self.files.search(args["query"], args.get("path", "."))}
             if name == "file_info":
@@ -992,7 +1005,6 @@ class Agent:
         new_content = args["content"]
         branch = args.get("branch", "main")
 
-        # MEJORA 1: Verificación obligatoria para .py
         if path.endswith(".py"):
             current = await self.github_request("GET", f"/repos/{repo}/contents/{path}?ref={branch}")
             if isinstance(current, dict) and not current.get("error"):
@@ -1008,13 +1020,12 @@ class Agent:
                             "error": "VERIFICACIÓN FALLIDA - No se subió",
                             "errors": verify.get("errors"),
                             "warnings": verify.get("warnings"),
-                            "instruction": "El contenido nuevo tiene errores. CORRÍGELOS y vuelve a intentar con contenido DIFERENTE. Si no puedes, PARA y avisa al usuario.",
+                            "instruction": "El contenido nuevo tiene errores. CORRÍGELOS y vuelve a intentar con contenido DIFERENTE.",
                             "_no_retry": True,
                         }
                     if verify.get("warnings"):
                         print(f"[GITHUB] Warnings: {verify['warnings']}")
 
-        # MEJORA 4: Tests antes de subir
         if path.endswith(".py"):
             from sandbox import sandbox
             test_result = await sandbox.run_shell("python test_tools.py 2>&1 || true")
@@ -1023,11 +1034,10 @@ class Agent:
                 return {
                     "error": "TESTS FALLIDOS - No se subió",
                     "detail": stdout[:2000],
-                    "instruction": "Los tests fallaron. CORRIGE el código antes de reintentar. Si no puedes, PARA y avisa al usuario.",
+                    "instruction": "Los tests fallaron. CORRIGE el código antes de reintentar.",
                     "_no_retry": True,
                 }
 
-        # Escritura normal (con branch)
         content = base64.b64encode(new_content.encode("utf-8")).decode("ascii")
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         headers = {
@@ -1186,10 +1196,6 @@ class Agent:
                     return {"error": f"HTTP {resp.status}", "detail": data}
                 return {"id": data.get("id"), "url": data.get("url"), "status": data.get("status")}
 
-    # ================================================================
-    # GENERACIÓN DE IMÁGENES — POLLINATIONS.AI
-    # ================================================================
-
     async def generate_image(self, prompt: str) -> dict[str, Any]:
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
@@ -1231,9 +1237,6 @@ class Agent:
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
 
-    # ================================================================
-    # ASK
-    # ================================================================
     async def ask(
         self,
         user_id: int,
@@ -1299,9 +1302,6 @@ class Agent:
                         assistant_message["tool_calls"] = tool_calls
                     messages.append(assistant_message)
 
-                    # ====================================================
-                    # REINTENTO AUTOMÁTICO PARA malformed_function_call
-                    # ====================================================
                     if not tool_calls and finish_reason == "malformed_function_call":
                         malformed_retries += 1
                         if malformed_retries <= 3:
@@ -1310,8 +1310,7 @@ class Agent:
                                 "role": "user",
                                 "content": (
                                     "⚠️ TU ÚLTIMO INTENTO FALLÓ con 'malformed_function_call'. "
-                                    "Eso significa que intentaste meter demasiado contenido en una sola tool call. "
-                                    "OBLIGATORIO: divide el trabajo en bloques de MÁXIMO 50 líneas. "
+                                    "Divide el trabajo en bloques de MÁXIMO 50 líneas. "
                                     "Usa file_write para el primer bloque y file_append para los siguientes. "
                                     "NUNCA metas más de 50 líneas en 'content'. "
                                     "Cuando el archivo esté completo, usa github_upload_project. "
@@ -1320,10 +1319,7 @@ class Agent:
                             })
                             continue
                         else:
-                            answer = (
-                                "⚠️ Gemini falló 3 veces intentando hacer la tool call. "
-                                "Prueba a pedirle bloques de 30 líneas."
-                            )
+                            answer = "⚠️ Gemini falló 3 veces intentando hacer la tool call. Prueba a pedirle bloques de 30 líneas."
                             await self.save(user_id, channel_id, "assistant", answer)
                             return answer, image_url, files_to_send or None
 
@@ -1393,7 +1389,8 @@ class Agent:
                                 await self.save(user_id, channel_id, "assistant", answer)
                                 return answer, image_url, files_to_send or None
 
-                        if result_history.count(result_hash) >= 3:
+                        # Umbral subido a 5 (antes 3)
+                        if result_history.count(result_hash) >= 5:
                             print(f"[MOTOR] Estancamiento en '{name}' ({result_history.count(result_hash) + 1} veces). Cortando.")
                             raise RuntimeError(f"Estancamiento en '{name}'.")
                         result_history.append(result_hash)
