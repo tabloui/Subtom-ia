@@ -31,11 +31,6 @@ class Agent:
         self.pool: asyncpg.Pool | None = None
         self.files = FileTools(config.workspace)
 
-        from collections import deque
-        self._flux_keys = deque(
-            key for key in (config.flux_api_key_1, config.flux_api_key_2) if key
-        )
-
     async def init(self) -> None:
         self.pool = await asyncpg.create_pool(
             config.database_url, min_size=1, max_size=3, command_timeout=60,
@@ -410,11 +405,13 @@ class Agent:
                 "parameters": {"type": "object", "properties": {"project": {"type": "string"}, "target": {"type": "string", "default": "production"}}, "required": ["project"]},
             }},
 
-            # ============ IMAGEN ============
+            # ============ IMAGEN (Pollinations) ============
             {"type": "function", "function": {
                 "name": "generate_image",
-                "description": "Genera una imagen con FLUX.",
-                "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]},
+                "description": "Genera una imagen a partir de un prompt usando Pollinations.AI (modelo flux, gratis e ilimitado). Ideal para logos, ilustraciones y avatares.",
+                "parameters": {"type": "object", "properties": {
+                    "prompt": {"type": "string", "description": "Descripción detallada de la imagen, en inglés o español"},
+                }, "required": ["prompt"]},
             }},
 
             # ============ SANDBOX ============
@@ -1115,45 +1112,40 @@ class Agent:
                     return {"error": f"HTTP {resp.status}", "detail": data}
                 return {"id": data.get("id"), "url": data.get("url"), "status": data.get("status")}
 
+    # ================================================================
+    # GENERACIÓN DE IMÁGENES — POLLINATIONS.AI
+    # ================================================================
+
     async def generate_image(self, prompt: str) -> dict[str, Any]:
+        """
+        Genera una imagen con Pollinations.AI.
+        - Gratis, sin API key, sin registro.
+        - Modelo flux: mejor manejo de texto (ideal para logos).
+        - Devuelve la imagen directamente en bytes (no hay polling).
+        """
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
-        if not self._flux_keys:
-            return {"error": "No hay claves FLUX configuradas."}
         prompt = prompt.strip()
-        key = self._flux_keys[0]
-        self._flux_keys.rotate(-1)
-        base = config.flux_base_url.rstrip("/")
-        model = config.flux_endpoint
-        headers = {"accept": "application/json", "x-key": key, "Content-Type": "application/json"}
-        timeout = aiohttp.ClientTimeout(total=120)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(f"{base}/{model}", headers=headers, json={"prompt": prompt, "width": 1024, "height": 1024, "output_format": "png"}) as response:
-                data = await response.json(content_type=None)
-                if response.status >= 400:
-                    return {"error": f"FLUX HTTP {response.status}", "detail": data}
-                polling_url = data.get("polling_url")
-            if not polling_url:
-                return {"error": "FLUX no devolvió polling_url", "detail": data}
-            for _ in range(60):
-                await asyncio.sleep(1)
-                async with session.get(polling_url, headers={"x-key": key}) as response:
-                    result = await response.json(content_type=None)
-                    if response.status >= 400:
-                        return {"error": f"FLUX polling HTTP {response.status}", "detail": result}
-                    status = str(result.get("status", "")).lower()
-                    if status == "ready":
-                        sample = result.get("result", {}).get("sample")
-                        if not sample:
-                            return {"result": result}
-                        local_path = await self._download_flux_image(sample, prompt)
-                        return {"image_url": sample, "local_path": local_path, "note": "Usa discord_send_file con este local_path."}
-                    if status in {"error", "failed", "request moderated", "content moderated"}:
-                        return {"error": f"FLUX falló: {status}", "detail": result}
-            return {"error": "FLUX tardó demasiado"}
 
-    async def _download_flux_image(self, url: str, prompt: str) -> str | None:
+        # Codificar el prompt para URL
+        prompt_encoded = aiohttp.helpers.quote(prompt, safe="")
+        # model=flux → mejor con texto
+        # nologo=true → sin marca de agua
+        # enhance=true → mejora el prompt automáticamente
+        url = (
+            f"https://image.pollinations.ai/prompt/{prompt_encoded}"
+            f"?model=flux&width=1024&height=1024&nologo=true&enhance=true"
+        )
+
         try:
+            timeout = aiohttp.ClientTimeout(total=180)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return {"error": f"Pollinations HTTP {resp.status}"}
+                    data = await resp.read()
+
+            # Guardar imagen en workspace/generated/
             from datetime import datetime
             folder = Path(config.workspace) / "generated"
             folder.mkdir(parents=True, exist_ok=True)
@@ -1161,17 +1153,20 @@ class Agent:
             slug = re.sub(r"[^a-z0-9]+", "_", prompt.lower())[:30]
             filename = f"{stamp}_{slug}.png"
             target = folder / filename
-            timeout = aiohttp.ClientTimeout(total=60)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as resp:
-                    if resp.status >= 400:
-                        return None
-                    data = await resp.read()
-                    target.write_bytes(data)
-            return str(target.relative_to(config.workspace))
+            target.write_bytes(data)
+
+            local_path = str(target.relative_to(config.workspace))
+            print(f"[POLLINATIONS] Imagen generada: {local_path} ({len(data)} bytes)")
+
+            return {
+                "image_url": url,
+                "local_path": local_path,
+                "note": "Usa discord_send_file con este local_path.",
+            }
+        except asyncio.TimeoutError:
+            return {"error": "Pollinations tardó demasiado (timeout 180s)"}
         except Exception as exc:
-            print(f"[FLUX] Error descargando imagen: {exc}")
-            return None
+            return {"error": f"{type(exc).__name__}: {exc}"}
 
     # ================================================================
     # ASK
@@ -1287,7 +1282,7 @@ class Agent:
                             if result.get("_send_file"):
                                 files_to_send.append(result["_send_file"])
 
-                        # Si la herramienta pide NO reintentar (ej: verificación fallida, tests fallidos, URL muerta), paramos
+                        # Si la herramienta pide NO reintentar (verificación fallida, tests fallidos, URL muerta), paramos
                         if isinstance(result, dict) and result.get("_no_retry"):
                             err_msg = result.get("error", "error desconocido")
                             extra = result.get("instruction", "")
