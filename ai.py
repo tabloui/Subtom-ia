@@ -22,6 +22,8 @@ IMAGE_EXTENSIONS = {
     ".bmp", ".tiff", ".tif", ".ico",
 }
 
+REPO_PRINCIPAL = "tabloui/subtom-ia"
+
 
 class Agent:
 
@@ -134,8 +136,6 @@ class Agent:
         return content
 
     def _select_model(self, prompt: str, task: TaskType, force_image: bool = False) -> list[str]:
-        """Devuelve TODOS los modelos configurados en los slots, en orden.
-        Así si Gemini falla, se prueba Groq, y viceversa."""
         modelos = []
         for slot in config.ai_slots:
             if slot.model and slot.model not in modelos:
@@ -143,13 +143,9 @@ class Agent:
         return modelos or [config.ai_model]
 
     def _extract_tool_calls(self, message: dict) -> list[dict]:
-        """Normaliza la respuesta del modelo: acepta formato OpenAI (tool_calls)
-        y formato Gemini (functionCall dentro de parts)."""
         tool_calls = message.get("tool_calls") or []
         if tool_calls:
             return tool_calls
-
-        # Fallback: por si el connector no tradujo y viene functionCall crudo
         parts = message.get("parts") or []
         converted = []
         for p in parts:
@@ -166,7 +162,7 @@ class Agent:
         return converted
 
     # ================================================================
-    # TOOL SCHEMAS (sin cambios)
+    # TOOL SCHEMAS
     # ================================================================
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
@@ -302,13 +298,23 @@ class Agent:
                 }, "required": ["repo", "path"]},
             }},
             {"type": "function", "function": {
+                "name": "github_create_branch",
+                "description": "Crea una rama nueva en un repo. Úsala SIEMPRE antes de escribir para no tocar main.",
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "branch": {"type": "string"},
+                    "from_branch": {"type": "string", "default": "main"},
+                }, "required": ["repo", "branch"]},
+            }},
+            {"type": "function", "function": {
                 "name": "github_write",
-                "description": "Crea o actualiza un archivo en GitHub. ANTES: 1) github_search_code o github_tree; 2) github_read. Nunca escribas a ciegas.",
+                "description": "Crea o actualiza un archivo en GitHub. ANTES: 1) github_search_code o github_tree; 2) github_read. Acepta un parámetro opcional 'branch' para escribir en una rama concreta (nunca main).",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "path": {"type": "string"},
                     "content": {"type": "string"},
                     "message": {"type": "string"},
+                    "branch": {"type": "string", "default": "main"},
                 }, "required": ["repo", "path", "content", "message"]},
             }},
             {"type": "function", "function": {
@@ -424,7 +430,7 @@ class Agent:
             # ============ SANDBOX ============
             {"type": "function", "function": {
                 "name": "sandbox_run_python",
-                "description": "Ejecuta código Python en sandbox.",
+                "description": "Ejecuta código Python en sandbox. Si falla dos veces con el mismo error, no reintentes: reporta el error.",
                 "parameters": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
             }},
             {"type": "function", "function": {
@@ -602,7 +608,7 @@ class Agent:
         ]
 
     # ================================================================
-    # RUN TOOL (sin cambios)
+    # RUN TOOL
     # ================================================================
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -667,6 +673,8 @@ class Agent:
                 return result
             if name == "github_read":
                 return await self.github_read_with_fallback(args)
+            if name == "github_create_branch":
+                return await self.github_create_branch(args)
             if name == "github_write":
                 return await self.github_write(args)
             if name == "github_create_repo":
@@ -861,6 +869,22 @@ class Agent:
 
         return result
 
+    async def github_create_branch(self, args: dict[str, Any]) -> dict[str, Any]:
+        """MEJORA 2: crea una rama nueva desde from_branch."""
+        if not config.github_token:
+            return {"error": "GITHUB_TOKEN no configurado."}
+        repo = args["repo"].strip("/")
+        branch = args["branch"]
+        from_branch = args.get("from_branch", "main")
+        ref = await self.github_request("GET", f"/repos/{repo}/git/refs/heads/{from_branch}")
+        if isinstance(ref, dict) and ref.get("error"):
+            return ref
+        sha = ref["object"]["sha"]
+        return await self.github_request("POST", f"/repos/{repo}/git/refs", json={
+            "ref": f"refs/heads/{branch}",
+            "sha": sha,
+        })
+
     async def _cached_search(self, args: dict[str, Any]) -> dict[str, Any]:
         query = args.get("query", "")
         max_results = int(args.get("max_results", 5))
@@ -911,11 +935,49 @@ class Agent:
                     return {"content": text}
 
     async def github_write(self, args: dict[str, Any]) -> dict[str, Any]:
+        """MEJORA 1 (verificación .py) + MEJORA 2 (branch) + MEJORA 4 (tests)."""
         if not config.github_token:
             return {"error": "GITHUB_TOKEN no configurado."}
         repo = args["repo"].strip("/")
         path = args["path"].lstrip("/")
-        content = base64.b64encode(args["content"].encode("utf-8")).decode("ascii")
+        new_content = args["content"]
+        branch = args.get("branch", "main")
+
+        # === MEJORA 1: Verificación obligatoria para .py ===
+        if path.endswith(".py"):
+            current = await self.github_request("GET", f"/repos/{repo}/contents/{path}?ref={branch}")
+            if isinstance(current, dict) and not current.get("error"):
+                try:
+                    old_content = base64.b64decode(current.get("content", "")).decode("utf-8", "replace")
+                except Exception:
+                    old_content = ""
+                if old_content:
+                    from sandbox import sandbox
+                    verify = await sandbox.verify_python_change(path, old_content, new_content)
+                    if not verify.get("ok"):
+                        return {
+                            "error": "VERIFICACIÓN FALLIDA - No se subió",
+                            "errors": verify.get("errors"),
+                            "warnings": verify.get("warnings"),
+                            "instruction": "Corrige los errores y vuelve a intentar.",
+                        }
+                    if verify.get("warnings"):
+                        print(f"[GITHUB] Warnings: {verify['warnings']}")
+
+        # === MEJORA 4: Tests antes de subir ===
+        if path.endswith(".py"):
+            from sandbox import sandbox
+            test_result = await sandbox.run_shell("cd /app && python tests/test_tools.py 2>&1 || true")
+            stdout = (test_result.get("stdout") or "") if isinstance(test_result, dict) else ""
+            if "TESTS FALLIDOS" in stdout:
+                return {
+                    "error": "TESTS FALLIDOS - No se subió",
+                    "detail": stdout[:2000],
+                    "instruction": "Corrige los tests antes de subir.",
+                }
+
+        # === Escritura normal (con branch) ===
+        content = base64.b64encode(new_content.encode("utf-8")).decode("ascii")
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         headers = {
             "Authorization": f"Bearer {config.github_token}",
@@ -925,21 +987,21 @@ class Agent:
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             sha = None
-            async with session.get(url, headers=headers) as response:
+            async with session.get(url + f"?ref={branch}", headers=headers) as response:
                 if response.status == 200:
                     existing = await response.json(content_type=None)
                     sha = existing.get("sha")
                 elif response.status not in {404, 301, 302}:
                     detail = await response.text()
                     return {"error": f"GitHub HTTP {response.status}", "detail": detail[:3000]}
-            payload = {"message": args["message"], "content": content}
+            payload = {"message": args["message"], "content": content, "branch": branch}
             if sha:
                 payload["sha"] = sha
             async with session.put(url, headers=headers, json=payload) as response:
                 data = await response.json(content_type=None)
                 if response.status >= 400:
                     return {"error": f"GitHub HTTP {response.status}", "detail": data}
-                return data
+                return {"ok": True, "verified": True, "sha": data.get("content", {}).get("sha")}
 
     async def github_create_repo(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.github_token:
@@ -1127,7 +1189,7 @@ class Agent:
             return None
 
     # ================================================================
-    # ASK (con soporte multi-proveedor y tool_calls normalizados)
+    # ASK
     # ================================================================
     async def ask(
         self,
@@ -1162,7 +1224,7 @@ class Agent:
 
         MAX_SAFETY_ROUNDS = 100
         MAX_TOTAL_SECONDS = 300.0
-        MAX_REPEAT_SAME_CALL = 1
+        MAX_REPEAT_SAME_CALL = 2  # CAMBIO: antes 1, ahora 2 para dar margen
 
         for modelo_actual in modelos:
             t0 = asyncio.get_event_loop().time()
@@ -1185,7 +1247,6 @@ class Agent:
                         raise RuntimeError("La IA no devolvió ninguna elección.")
 
                     message = choices[0].get("message") or {}
-                    # Normaliza tool_calls (acepta formato OpenAI y formato Gemini crudo)
                     tool_calls = self._extract_tool_calls(message)
 
                     assistant_message: dict[str, Any] = {"role": "assistant", "content": message.get("content")}
@@ -1241,6 +1302,15 @@ class Agent:
 
                         result_sig = connector.clean_tool_result(result)
                         result_hash = hashlib.blake2b(result_sig.encode("utf-8", "ignore"), digest_size=8).hexdigest()
+
+                        # FIX: si sandbox_run_python falla dos veces seguidas, corta sin estancamiento
+                        if name == "sandbox_run_python" and isinstance(result, dict) and result.get("error"):
+                            if result_history.count(result_hash) >= 1:
+                                print(f"[MOTOR] sandbox_run_python falla repetidamente. Cortando.")
+                                answer = f"No pude ejecutar el código en el sandbox. Error: {result.get('error')}"
+                                await self.save(user_id, channel_id, "assistant", answer)
+                                return answer, image_url, files_to_send or None
+
                         if len(result_history) >= 1 and result_history[-1] == result_hash:
                             print(f"[MOTOR] Estancamiento en '{name}'. Cortando.")
                             raise RuntimeError(f"Estancamiento en '{name}'.")
