@@ -942,7 +942,8 @@ class Agent:
                             "error": "VERIFICACIÓN FALLIDA - No se subió",
                             "errors": verify.get("errors"),
                             "warnings": verify.get("warnings"),
-                            "instruction": "Corrige los errores y vuelve a intentar.",
+                            "instruction": "El contenido nuevo tiene errores. CORRÍGELOS y vuelve a intentar con contenido DIFERENTE. Si no puedes, PARA y avisa al usuario.",
+                            "_no_retry": True,
                         }
                     if verify.get("warnings"):
                         print(f"[GITHUB] Warnings: {verify['warnings']}")
@@ -956,7 +957,8 @@ class Agent:
                 return {
                     "error": "TESTS FALLIDOS - No se subió",
                     "detail": stdout[:2000],
-                    "instruction": "Corrige los tests antes de subir.",
+                    "instruction": "Los tests fallaron. CORRIGE el código antes de reintentar. Si no puedes, PARA y avisa al usuario.",
+                    "_no_retry": True,
                 }
 
         # Escritura normal (con branch)
@@ -1207,7 +1209,7 @@ class Agent:
 
         MAX_SAFETY_ROUNDS = 100
         MAX_TOTAL_SECONDS = 300.0
-        MAX_REPEAT_SAME_CALL = 3
+        MAX_REPEAT_SAME_CALL = 5
 
         for modelo_actual in modelos:
             t0 = asyncio.get_event_loop().time()
@@ -1240,7 +1242,15 @@ class Agent:
                     if not tool_calls:
                         answer = (message.get("content") or "").strip()
                         if not answer:
-                            answer = "No he recibido una respuesta de texto del modelo."
+                            finish = choices[0].get("finish_reason", "unknown")
+                            if finish in ("safety", "recitation", "blocked", "prohibited_content"):
+                                answer = f"⚠️ Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish}). Prueba a reformular el mensaje."
+                            elif finish == "max_tokens":
+                                answer = "⚠️ La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
+                            elif finish == "other":
+                                answer = "⚠️ Gemini devolvió un error genérico. Prueba otra vez."
+                            else:
+                                answer = f"⚠️ No he recibido respuesta del modelo (finish_reason: {finish})."
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
                         motor.record(model=modelo_actual, task=task, lang=lang, latency=dt, error=False)
@@ -1277,9 +1287,13 @@ class Agent:
                             if result.get("_send_file"):
                                 files_to_send.append(result["_send_file"])
 
+                        # Si la herramienta pide NO reintentar (ej: verificación fallida, tests fallidos, URL muerta), paramos
                         if isinstance(result, dict) and result.get("_no_retry"):
                             err_msg = result.get("error", "error desconocido")
-                            answer = f"No pude completar la operación. Error: {err_msg}"
+                            extra = result.get("instruction", "")
+                            answer = f"⚠️ No pude completar la operación: {err_msg}"
+                            if extra:
+                                answer += f"\n\n{extra}"
                             await self.save(user_id, channel_id, "assistant", answer)
                             return answer, image_url, files_to_send or None
 
@@ -1294,8 +1308,8 @@ class Agent:
                                 await self.save(user_id, channel_id, "assistant", answer)
                                 return answer, image_url, files_to_send or None
 
-                        # Estancamiento: mismo resultado 2 veces (3 intentos en total)
-                        if result_history.count(result_hash) >= 2:
+                        # Estancamiento: mismo resultado 3 veces (4 intentos en total)
+                        if result_history.count(result_hash) >= 3:
                             print(f"[MOTOR] Estancamiento en '{name}' ({result_history.count(result_hash) + 1} veces). Cortando.")
                             raise RuntimeError(f"Estancamiento en '{name}'.")
                         result_history.append(result_hash)
