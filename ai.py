@@ -373,16 +373,6 @@ class Agent:
                 "parameters": {"type": "object", "properties": {"repo": {"type": "string"}, "branch": {"type": "string", "default": "main"}}, "required": ["repo"]},
             }},
             {"type": "function", "function": {
-                "name": "github_get_file",
-                "description": "Obtiene un archivo con metadatos.",
-                "parameters": {"type": "object", "properties": {"repo": {"type": "string"}, "path": {"type": "string"}, "ref": {"type": "string", "default": "main"}}, "required": ["repo", "path"]},
-            }},
-            {"type": "function", "function": {
-                "name": "github_update_file",
-                "description": "Actualiza un archivo (necesita SHA).",
-                "parameters": {"type": "object", "properties": {"repo": {"type": "string"}, "path": {"type": "string"}, "content": {"type": "string"}, "message": {"type": "string"}, "sha": {"type": "string"}}, "required": ["repo", "path", "content", "message", "sha"]},
-            }},
-            {"type": "function", "function": {
                 "name": "github_delete_file",
                 "description": "Elimina un archivo (necesita SHA).",
                 "parameters": {"type": "object", "properties": {"repo": {"type": "string"}, "path": {"type": "string"}, "message": {"type": "string"}, "sha": {"type": "string"}}, "required": ["repo", "path", "message", "sha"]},
@@ -699,11 +689,6 @@ class Agent:
                 return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/commits/{args['sha']}")
             if name == "github_list_commits":
                 return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/commits?sha={args.get('branch', 'main')}")
-            if name == "github_get_file":
-                return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}?ref={args.get('ref', 'main')}")
-            if name == "github_update_file":
-                content = base64.b64encode(args["content"].encode("utf-8")).decode("ascii")
-                return await self.github_request("PUT", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}", json={"message": args["message"], "content": content, "sha": args["sha"]})
             if name == "github_delete_file":
                 return await self.github_request("DELETE", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}", json={"message": args["message"], "sha": args["sha"]})
             if name == "github_star_repo":
@@ -870,7 +855,6 @@ class Agent:
         return result
 
     async def github_create_branch(self, args: dict[str, Any]) -> dict[str, Any]:
-        """MEJORA 2: crea una rama nueva desde from_branch."""
         if not config.github_token:
             return {"error": "GITHUB_TOKEN no configurado."}
         repo = args["repo"].strip("/")
@@ -935,7 +919,6 @@ class Agent:
                     return {"content": text}
 
     async def github_write(self, args: dict[str, Any]) -> dict[str, Any]:
-        """MEJORA 1 (verificación .py) + MEJORA 2 (branch) + MEJORA 4 (tests)."""
         if not config.github_token:
             return {"error": "GITHUB_TOKEN no configurado."}
         repo = args["repo"].strip("/")
@@ -943,7 +926,7 @@ class Agent:
         new_content = args["content"]
         branch = args.get("branch", "main")
 
-        # === MEJORA 1: Verificación obligatoria para .py ===
+        # MEJORA 1: Verificación obligatoria para .py
         if path.endswith(".py"):
             current = await self.github_request("GET", f"/repos/{repo}/contents/{path}?ref={branch}")
             if isinstance(current, dict) and not current.get("error"):
@@ -964,10 +947,10 @@ class Agent:
                     if verify.get("warnings"):
                         print(f"[GITHUB] Warnings: {verify['warnings']}")
 
-        # === MEJORA 4: Tests antes de subir ===
+        # MEJORA 4: Tests antes de subir
         if path.endswith(".py"):
             from sandbox import sandbox
-            test_result = await sandbox.run_shell("cd /app && python tests/test_tools.py 2>&1 || true")
+            test_result = await sandbox.run_shell("python test_tools.py 2>&1 || true")
             stdout = (test_result.get("stdout") or "") if isinstance(test_result, dict) else ""
             if "TESTS FALLIDOS" in stdout:
                 return {
@@ -976,7 +959,7 @@ class Agent:
                     "instruction": "Corrige los tests antes de subir.",
                 }
 
-        # === Escritura normal (con branch) ===
+        # Escritura normal (con branch)
         content = base64.b64encode(new_content.encode("utf-8")).decode("ascii")
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         headers = {
@@ -1224,7 +1207,7 @@ class Agent:
 
         MAX_SAFETY_ROUNDS = 100
         MAX_TOTAL_SECONDS = 300.0
-        MAX_REPEAT_SAME_CALL = 2  # CAMBIO: antes 1, ahora 2 para dar margen
+        MAX_REPEAT_SAME_CALL = 3
 
         for modelo_actual in modelos:
             t0 = asyncio.get_event_loop().time()
@@ -1303,7 +1286,7 @@ class Agent:
                         result_sig = connector.clean_tool_result(result)
                         result_hash = hashlib.blake2b(result_sig.encode("utf-8", "ignore"), digest_size=8).hexdigest()
 
-                        # FIX: si sandbox_run_python falla dos veces seguidas, corta sin estancamiento
+                        # FIX: si sandbox_run_python falla dos veces seguidas, cortar sin estancamiento
                         if name == "sandbox_run_python" and isinstance(result, dict) and result.get("error"):
                             if result_history.count(result_hash) >= 1:
                                 print(f"[MOTOR] sandbox_run_python falla repetidamente. Cortando.")
@@ -1311,8 +1294,9 @@ class Agent:
                                 await self.save(user_id, channel_id, "assistant", answer)
                                 return answer, image_url, files_to_send or None
 
-                        if len(result_history) >= 1 and result_history[-1] == result_hash:
-                            print(f"[MOTOR] Estancamiento en '{name}'. Cortando.")
+                        # Estancamiento: mismo resultado 2 veces (3 intentos en total)
+                        if result_history.count(result_hash) >= 2:
+                            print(f"[MOTOR] Estancamiento en '{name}' ({result_history.count(result_hash) + 1} veces). Cortando.")
                             raise RuntimeError(f"Estancamiento en '{name}'.")
                         result_history.append(result_hash)
 
