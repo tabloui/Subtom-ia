@@ -136,6 +136,10 @@ class Agent:
     def _select_model(self, prompt: str, task: TaskType, force_image: bool = False) -> list[str]:
         return [config.ai_model]
 
+    # ================================================================
+    # TOOL SCHEMAS
+    # ================================================================
+
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
             # ============ WEB ============
@@ -242,19 +246,59 @@ class Agent:
 
             # ============ GITHUB ============
             {"type": "function", "function": {
+                "name": "github_search_code",
+                "description": (
+                    "PASO 1 OBLIGATORIO. Busca archivos o código en GitHub. "
+                    "Úsalo SIEMPRE antes de github_read cuando no estés 100% seguro de la ruta. "
+                    "Ejemplos de query: 'filename:ai.py repo:tabloui/subtom-ia' o 'class Agent repo:tabloui/subtom-ia'."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "query": {"type": "string"},
+                }, "required": ["query"]},
+            }},
+            {"type": "function", "function": {
                 "name": "github_list",
                 "description": "Lista tus repositorios de GitHub.",
                 "parameters": {"type": "object", "properties": {}},
             }},
             {"type": "function", "function": {
+                "name": "github_tree",
+                "description": (
+                    "Lista recursivamente los archivos de un repo o carpeta. "
+                    "Úsalo para ver la estructura real del repo antes de leer o escribir archivos."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "path": {"type": "string", "default": ""},
+                    "ref": {"type": "string", "default": "main"},
+                }, "required": ["repo"]},
+            }},
+            {"type": "function", "function": {
                 "name": "github_read",
-                "description": "Lee un archivo de un repositorio.",
-                "parameters": {"type": "object", "properties": {"repo": {"type": "string"}, "path": {"type": "string"}}, "required": ["repo", "path"]},
+                "description": (
+                    "Lee un archivo de un repositorio. La ruta debe ser exacta. "
+                    "Si no estás seguro de la ruta, usa github_search_code o github_tree ANTES. "
+                    "Si el archivo no existe en la ruta indicada, prueba automáticamente en la raíz."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "path": {"type": "string"},
+                    "ref": {"type": "string", "default": "main"},
+                }, "required": ["repo", "path"]},
             }},
             {"type": "function", "function": {
                 "name": "github_write",
-                "description": "Crea o actualiza un archivo en GitHub.",
-                "parameters": {"type": "object", "properties": {"repo": {"type": "string"}, "path": {"type": "string"}, "content": {"type": "string"}, "message": {"type": "string"}}, "required": ["repo", "path", "content", "message"]},
+                "description": (
+                    "Crea o actualiza un archivo en GitHub. ANTES de usarlo, DEBES hacer: "
+                    "1) github_search_code o github_tree para localizar el archivo; "
+                    "2) github_read para leer su contenido actual. Nunca escribas a ciegas."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "message": {"type": "string"},
+                }, "required": ["repo", "path", "content", "message"]},
             }},
             {"type": "function", "function": {
                 "name": "github_create_repo",
@@ -325,11 +369,6 @@ class Agent:
                 "name": "github_delete_file",
                 "description": "Elimina un archivo (necesita SHA).",
                 "parameters": {"type": "object", "properties": {"repo": {"type": "string"}, "path": {"type": "string"}, "message": {"type": "string"}, "sha": {"type": "string"}}, "required": ["repo", "path", "message", "sha"]},
-            }},
-            {"type": "function", "function": {
-                "name": "github_search_code",
-                "description": "Busca código en GitHub.",
-                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
             }},
             {"type": "function", "function": {
                 "name": "github_star_repo",
@@ -551,6 +590,10 @@ class Agent:
             }},
         ]
 
+    # ================================================================
+    # RUN TOOL
+    # ================================================================
+
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
             # WEB
@@ -594,10 +637,26 @@ class Agent:
                 return self.files.search_and_replace_dir(args.get("directory", "."), args["old"], args["new"])
 
             # GITHUB
+            if name == "github_search_code":
+                return await self.github_request("GET", f"/search/code?q={args['query']}")
             if name == "github_list":
                 return await self.github_request("GET", "/user/repos?per_page=100")
+            if name == "github_tree":
+                repo = args["repo"].strip("/")
+                path = args.get("path", "").strip("/")
+                ref = args.get("ref", "main")
+                endpoint = f"/repos/{repo}/git/trees/{ref}"
+                if path:
+                    endpoint = f"/repos/{repo}/contents/{path}?ref={ref}"
+                result = await self.github_request("GET", endpoint)
+                if isinstance(result, dict) and result.get("tree"):
+                    result["tree"] = [
+                        {"path": t["path"], "type": t["type"], "size": t.get("size", 0)}
+                        for t in result["tree"] if t.get("type") in ("blob", "tree")
+                    ]
+                return result
             if name == "github_read":
-                return await self.github_request("GET", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}")
+                return await self.github_read_with_fallback(args)
             if name == "github_write":
                 return await self.github_write(args)
             if name == "github_create_repo":
@@ -629,8 +688,6 @@ class Agent:
                 return await self.github_request("PUT", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}", json={"message": args["message"], "content": content, "sha": args["sha"]})
             if name == "github_delete_file":
                 return await self.github_request("DELETE", f"/repos/{args['repo'].strip('/')}/contents/{args['path'].lstrip('/')}", json={"message": args["message"], "sha": args["sha"]})
-            if name == "github_search_code":
-                return await self.github_request("GET", f"/search/code?q={args['query']}")
             if name == "github_star_repo":
                 return await self.github_request("PUT", f"/user/starred/{args['repo'].strip('/')}")
             if name == "github_fork_repo":
@@ -763,6 +820,43 @@ class Agent:
 
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {str(exc)[:2000]}"}
+
+    # ================================================================
+    # GITHUB HELPERS
+    # ================================================================
+
+    async def github_read_with_fallback(self, args: dict[str, Any]) -> dict[str, Any]:
+        """
+        Lee un archivo de GitHub. Si falla con la ruta indicada,
+        intenta automáticamente con la ruta sin prefijo (ej: src/ai.py -> ai.py).
+        """
+        repo = args["repo"].strip("/")
+        path = args["path"].lstrip("/")
+        ref = args.get("ref", "main")
+
+        # Intento 1: ruta tal cual
+        result = await self.github_request("GET", f"/repos/{repo}/contents/{path}?ref={ref}")
+        if not (isinstance(result, dict) and result.get("error")):
+            return result
+
+        # Intento 2: si empieza por src/ o similar, prueba sin el prefijo
+        if "/" in path:
+            alt_path = path.split("/", 1)[1]
+            print(f"[GITHUB] {path} no existe, probando {alt_path}...")
+            alt_result = await self.github_request("GET", f"/repos/{repo}/contents/{alt_path}?ref={ref}")
+            if not (isinstance(alt_result, dict) and alt_result.get("error")):
+                alt_result["_note"] = f"Ruta original '{path}' no existía, se usó '{alt_path}'."
+                return alt_result
+
+        # Intento 3: prueba en la raíz con el nombre del archivo
+        base_name = path.split("/")[-1]
+        if base_name != path:
+            root_result = await self.github_request("GET", f"/repos/{repo}/contents/{base_name}?ref={ref}")
+            if not (isinstance(root_result, dict) and root_result.get("error")):
+                root_result["_note"] = f"Ruta original '{path}' no existía, se usó '{base_name}' en la raíz."
+                return root_result
+
+        return result
 
     async def _cached_search(self, args: dict[str, Any]) -> dict[str, Any]:
         query = args.get("query", "")
@@ -1156,15 +1250,4 @@ class Agent:
                 if "bucle" in err_txt or "estancamiento" in err_txt:
                     print(f"[MOTOR] Cortado: {exc}")
                     break
-                if "image" in err_txt or "vision" in err_txt or "multimodal" in err_txt or "modality" in err_txt:
-                    print(f"[VISION] '{modelo_actual}' rechazó imagen. Siguiente.")
-                elif "404" in err_txt or "unavailable" in err_txt:
-                    print(f"[MODEL-GONE] '{modelo_actual}' ya no existe.")
-                else:
-                    print(f"[FALLBACK] '{modelo_actual}' falló: {type(exc).__name__}: {str(exc)[:200]}")
-                continue
-
-        raise RuntimeError(f"Todos los modelos fallaron. Último error: {last_error}")
-
-
-agent = Agent()
+                if "image" in err_txt or "vision" in err_txt or "multimodal" in err
