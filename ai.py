@@ -24,6 +24,9 @@ IMAGE_EXTENSIONS = {
 
 REPO_PRINCIPAL = "tabloui/subtom-ia"
 
+# Límite duro de líneas por tool call para evitar malformed_function_call de Gemini
+MAX_LINES_PER_TOOL_CALL = 100
+
 
 class Agent:
 
@@ -194,12 +197,20 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "file_write",
-                "description": "Crea o reemplaza un archivo de texto.",
+                "description": (
+                    "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 80 líneas por llamada. "
+                    "Si el archivo es más grande, divídelo: file_write para las primeras 80 líneas, "
+                    "file_append para cada bloque siguiente de 80. NUNCA pongas más de 80 líneas en 'content'."
+                ),
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
             {"type": "function", "function": {
                 "name": "file_append",
-                "description": "Añade contenido al final de un archivo.",
+                "description": (
+                    "Añade contenido al final de un archivo. LÍMITE DURO: máximo 80 líneas por llamada. "
+                    "Úsalo para construir archivos grandes: escribe las primeras 80 líneas con file_write, "
+                    "y el resto con file_append en bloques de 80 líneas."
+                ),
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
             {"type": "function", "function": {
@@ -303,7 +314,12 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_write",
-                "description": "Crea o actualiza un archivo en GitHub. ANTES: 1) github_search_code o github_tree; 2) github_read. Acepta un parámetro opcional 'branch' para escribir en una rama concreta (nunca main).",
+                "description": (
+                    "Escribe un archivo en GitHub. LÍMITE DURO: máximo 80 líneas en 'content'. "
+                    "Para archivos grandes, NO uses github_write. Usa file_write + file_append para "
+                    "escribirlo por trozos en el workspace, y luego github_upload_project para subirlo. "
+                    "NUNCA pongas más de 80 líneas en 'content'."
+                ),
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "path": {"type": "string"},
@@ -319,8 +335,18 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_upload_project",
-                "description": "Sube varios archivos en un solo commit.",
-                "parameters": {"type": "object", "properties": {"repo": {"type": "string"}, "files": {"type": "object"}, "message": {"type": "string"}, "branch": {"type": "string", "default": "main"}}, "required": ["repo", "files", "message"]},
+                "description": (
+                    "Sube UNO O VARIOS archivos a GitHub en un solo commit. USA ESTO para subir archivos "
+                    "grandes (más de 80 líneas) que ya tienes en el workspace. Lee los archivos del workspace "
+                    "y los sube como blob, sin meter el contenido en el tool call. Es la forma CORRECTA de "
+                    "subir archivos grandes. Parámetro 'files': diccionario {ruta_en_repo: ruta_local}."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string"},
+                    "files": {"type": "object"},
+                    "message": {"type": "string"},
+                    "branch": {"type": "string", "default": "main"},
+                }, "required": ["repo", "files", "message"]},
             }},
             {"type": "function", "function": {
                 "name": "github_create_issue",
@@ -405,10 +431,10 @@ class Agent:
                 "parameters": {"type": "object", "properties": {"project": {"type": "string"}, "target": {"type": "string", "default": "production"}}, "required": ["project"]},
             }},
 
-            # ============ IMAGEN (Pollinations) ============
+            # ============ IMAGEN ============
             {"type": "function", "function": {
                 "name": "generate_image",
-                "description": "Genera una imagen con Subtom IA Image (Pollinations.AI, modelo flux). Gratis e ilimitada. La imagen se enviará automáticamente al chat, no necesitas llamar a discord_send_file.",
+                "description": "Genera una imagen con Subtom IA Image (Pollinations.AI, modelo flux). Gratis e ilimitada. La imagen se envía automáticamente al chat.",
                 "parameters": {"type": "object", "properties": {
                     "prompt": {"type": "string", "description": "Descripción detallada en inglés (sujeto + estilo + colores + iluminación)"},
                 }, "required": ["prompt"]},
@@ -589,7 +615,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_send_file",
-                "description": "Envía un archivo del workspace a Discord.",
+                "description": "Envía un archivo del workspace a Discord. Acepta rutas relativas (busca también dentro del workspace) o absolutas.",
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "caption": {"type": "string", "default": ""}}, "required": ["path"]},
             }},
         ]
@@ -599,6 +625,29 @@ class Agent:
     # ================================================================
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
+            # ============================================================
+            # CHECK AUTOMÁTICO DE TAMAÑO PARA EVITAR malformed_function_call
+            # ============================================================
+            if name in ("file_write", "file_append", "github_write"):
+                content = args.get("content", "")
+                if isinstance(content, str):
+                    line_count = content.count("\n") + 1
+                    if line_count > MAX_LINES_PER_TOOL_CALL:
+                        print(f"[TOOL_GUARD] {name} rechazado: {line_count} líneas (>{MAX_LINES_PER_TOOL_CALL})")
+                        return {
+                            "error": f"CONTENIDO DEMASIADO GRANDE: {line_count} líneas (máximo {MAX_LINES_PER_TOOL_CALL})",
+                            "instruction": (
+                                "El contenido es demasiado grande para una sola llamada. "
+                                "Divídelo en trozos de máximo 80 líneas:\n"
+                                "1) Usa file_write para las primeras 80 líneas con path='pending_X.py'.\n"
+                                "2) Usa file_append para cada bloque siguiente de 80 líneas.\n"
+                                "3) Cuando el archivo esté completo, usa github_upload_project "
+                                "con files={'NOMBRE.py': 'pending_X.py'} para subirlo.\n"
+                                "NO uses github_write para archivos grandes."
+                            ),
+                            "_no_retry": True,
+                        }
+
             # WEB
             if name == "web_search":
                 return await self._cached_search(args)
@@ -814,7 +863,33 @@ class Agent:
                 import discord_tools
                 return await discord_tools.add_reaction(args["channel_id"], args["message_id"], args["emoji"])
             if name == "discord_send_file":
-                return {"_send_file": args["path"], "caption": args.get("caption", "")}
+                raw_path = args.get("path", "").strip()
+                if not raw_path:
+                    return {"error": "path vacío"}
+                p = Path(raw_path)
+                resolved: Path | None = None
+                if p.is_absolute():
+                    if p.exists() and p.is_file():
+                        resolved = p
+                else:
+                    if p.exists() and p.is_file():
+                        resolved = p
+                    else:
+                        candidate = Path(config.workspace) / raw_path
+                        if candidate.exists() and candidate.is_file():
+                            resolved = candidate
+                        else:
+                            candidate2 = Path(config.workspace) / p.name
+                            if candidate2.exists() and candidate2.is_file():
+                                resolved = candidate2
+                if resolved is None:
+                    return {
+                        "error": f"Archivo no encontrado: {raw_path}",
+                        "note": f"Buscado en CWD y en {config.workspace}",
+                        "_no_retry": True,
+                    }
+                print(f"[DISCORD_SEND_FILE] {raw_path} -> {resolved}")
+                return {"_send_file": str(resolved), "caption": args.get("caption", "")}
 
             return {"error": f"Herramienta desconocida: {name}"}
 
@@ -1023,8 +1098,14 @@ class Agent:
             uploaded = []
             for repo_path, ws_path in files_map.items():
                 try:
-                    full = self.files._path(ws_path)
+                    # Resolver el path local: primero intentar tal cual, luego dentro del workspace
+                    full = Path(ws_path)
+                    if not full.is_absolute() and not full.exists():
+                        candidate = Path(config.workspace) / ws_path
+                        if candidate.exists():
+                            full = candidate
                     if not full.is_file():
+                        print(f"[GITHUB_UPLOAD] No encontrado: {ws_path}")
                         continue
                     raw = full.read_bytes()
                     b64 = base64.b64encode(raw).decode("ascii")
@@ -1117,22 +1198,11 @@ class Agent:
     # ================================================================
 
     async def generate_image(self, prompt: str) -> dict[str, Any]:
-        """
-        Genera una imagen con Pollinations.AI.
-        - Gratis, sin API key, sin registro.
-        - Modelo flux: mejor manejo de texto (ideal para logos).
-        - Devuelve la imagen en bytes (no hay polling).
-        - La imagen se envía automáticamente al chat gracias a _send_file.
-        """
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
         prompt = prompt.strip()
 
-        # Codificar el prompt para URL
         prompt_encoded = aiohttp.helpers.quote(prompt, safe="")
-        # model=flux → mejor con texto
-        # nologo=true → sin marca de agua
-        # enhance=true → mejora el prompt automáticamente
         url = (
             f"https://image.pollinations.ai/prompt/{prompt_encoded}"
             f"?model=flux&width=1024&height=1024&nologo=true&enhance=true"
@@ -1146,7 +1216,6 @@ class Agent:
                         return {"error": f"Pollinations HTTP {resp.status}"}
                     data = await resp.read()
 
-            # Guardar imagen en workspace/generated/
             from datetime import datetime
             folder = Path(config.workspace) / "generated"
             folder.mkdir(parents=True, exist_ok=True)
@@ -1156,15 +1225,13 @@ class Agent:
             target = folder / filename
             target.write_bytes(data)
 
-            local_path = str(target.relative_to(config.workspace))
-            print(f"[POLLINATIONS] Imagen generada: {local_path} ({len(data)} bytes)")
+            abs_path = str(target.resolve())
+            print(f"[POLLINATIONS] Imagen generada: {abs_path} ({len(data)} bytes)")
 
             return {
-                "image_url": url,
-                "local_path": local_path,
-                "_send_file": local_path,
+                "local_path": abs_path,
+                "_send_file": abs_path,
                 "caption": f"🎨 Imagen creada con Subtom IA Image\n\n_Prompt:_ {prompt[:200]}",
-                "note": "La imagen se envía automáticamente al chat.",
             }
         except asyncio.TimeoutError:
             return {"error": "Pollinations tardó demasiado (timeout 180s)"}
@@ -1245,6 +1312,11 @@ class Agent:
                                 answer = f"⚠️ Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish}). Prueba a reformular el mensaje."
                             elif finish == "max_tokens":
                                 answer = "⚠️ La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
+                            elif finish == "malformed_function_call":
+                                answer = (
+                                    "⚠️ El modelo intentó hacer una llamada a herramienta demasiado grande y se rompió. "
+                                    "Vuelve a intentarlo pidiéndole que divida el contenido en trozos de máximo 80 líneas."
+                                )
                             elif finish == "other":
                                 answer = "⚠️ Gemini devolvió un error genérico. Prueba otra vez."
                             else:
@@ -1285,7 +1357,6 @@ class Agent:
                             if result.get("_send_file"):
                                 files_to_send.append(result["_send_file"])
 
-                        # Si la herramienta pide NO reintentar (verificación fallida, tests fallidos, URL muerta), paramos
                         if isinstance(result, dict) and result.get("_no_retry"):
                             err_msg = result.get("error", "error desconocido")
                             extra = result.get("instruction", "")
@@ -1298,7 +1369,6 @@ class Agent:
                         result_sig = connector.clean_tool_result(result)
                         result_hash = hashlib.blake2b(result_sig.encode("utf-8", "ignore"), digest_size=8).hexdigest()
 
-                        # FIX: si sandbox_run_python falla dos veces seguidas, cortar sin estancamiento
                         if name == "sandbox_run_python" and isinstance(result, dict) and result.get("error"):
                             if result_history.count(result_hash) >= 1:
                                 print(f"[MOTOR] sandbox_run_python falla repetidamente. Cortando.")
@@ -1306,7 +1376,6 @@ class Agent:
                                 await self.save(user_id, channel_id, "assistant", answer)
                                 return answer, image_url, files_to_send or None
 
-                        # Estancamiento: mismo resultado 3 veces (4 intentos en total)
                         if result_history.count(result_hash) >= 3:
                             print(f"[MOTOR] Estancamiento en '{name}' ({result_history.count(result_hash) + 1} veces). Cortando.")
                             raise RuntimeError(f"Estancamiento en '{name}'.")
