@@ -26,6 +26,9 @@ REPO_PRINCIPAL = "tabloui/subtom-ia"
 
 MAX_LINES_PER_TOOL_CALL = 50
 
+# Modelos de Pollinations en orden de preferencia (si uno falla, prueba el siguiente)
+POLLINATIONS_MODELS = ["flux", "turbo", "flux-realism", "flux-anime"]
+
 
 class Agent:
 
@@ -159,6 +162,82 @@ class Agent:
         return converted
 
     # ================================================================
+    # EXTRACCIÓN DE BLOQUES DE CÓDIGO (OPCIÓN 3)
+    # ================================================================
+
+    # Regex: detecta "FILE: nombre.ext" seguido de un bloque ```lang ... ```
+    _FILE_BLOCK_RE = re.compile(
+        r"FILE:\s*([^\n`]+?)\s*\n"
+        r"```[a-zA-Z0-9_+\-]*[ \t]*\n"
+        r"(.*?)"
+        r"\n```",
+        re.DOTALL | re.IGNORECASE,
+    )
+
+    def _extract_file_blocks(self, text: str) -> list[dict[str, str]]:
+        if not text:
+            return []
+        blocks = []
+        for match in self._FILE_BLOCK_RE.finditer(text):
+            filename = match.group(1).strip().strip("`").strip()
+            content = match.group(2)
+            if filename and content:
+                blocks.append({
+                    "filename": filename,
+                    "content": content.rstrip() + "\n",
+                })
+        return blocks
+
+    async def _process_file_blocks(self, text: str) -> list[str]:
+        """
+        Extrae bloques FILE: del texto, los guarda en el workspace,
+        y los sube a GitHub con github_upload_project.
+        Devuelve la lista de archivos subidos.
+        """
+        blocks = self._extract_file_blocks(text)
+        if not blocks:
+            return []
+
+        uploaded_files: list[str] = []
+        files_map: dict[str, str] = {}
+
+        for block in blocks:
+            filename = block["filename"]
+            content = block["content"]
+
+            safe_name = re.sub(r"[^a-zA-Z0-9._\-]", "_", filename)
+            pending_name = f"pending_{safe_name}"
+            try:
+                self.files.write_file(pending_name, content)
+                print(f"[FILE_BLOCK] Guardado {pending_name} ({len(content)} chars)")
+            except Exception as exc:
+                print(f"[FILE_BLOCK] Error guardando {pending_name}: {exc}")
+                continue
+
+            files_map[filename] = pending_name
+            uploaded_files.append(filename)
+
+        if not files_map:
+            return []
+
+        try:
+            result = await self.github_upload_project({
+                "repo": REPO_PRINCIPAL,
+                "files": files_map,
+                "message": f"Update {', '.join(uploaded_files)}",
+                "branch": "main",
+            })
+            if isinstance(result, dict) and result.get("error"):
+                print(f"[FILE_BLOCK] Error subiendo: {result['error']}")
+                return []
+            print(f"[FILE_BLOCK] Subidos {len(uploaded_files)} archivos: {uploaded_files}")
+        except Exception as exc:
+            print(f"[FILE_BLOCK] Excepción subiendo: {exc}")
+            return []
+
+        return uploaded_files
+
+    # ================================================================
     # TOOL SCHEMAS
     # ================================================================
     def tool_schemas(self) -> list[dict[str, Any]]:
@@ -198,16 +277,15 @@ class Agent:
                 "name": "file_write",
                 "description": (
                     "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 50 líneas por llamada. "
-                    "Si el archivo es más grande, divídelo en bloques de 50 líneas."
+                    "Para archivos grandes, escribe el código en tu RESPUESTA DE TEXTO con el formato:\n"
+                    "FILE: nombre.ext\n```lenguaje\n...contenido...\n```\n"
+                    "y el sistema lo extraerá y subirá automáticamente."
                 ),
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
             {"type": "function", "function": {
                 "name": "file_append",
-                "description": (
-                    "Añade contenido al final de un archivo. LÍMITE DURO: máximo 50 líneas por llamada. "
-                    "Úsalo para construir archivos grandes en bloques de 50 líneas."
-                ),
+                "description": "Añade contenido al final de un archivo. LÍMITE DURO: 50 líneas por llamada.",
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
             {"type": "function", "function": {
@@ -274,7 +352,7 @@ class Agent:
             # GITHUB
             {"type": "function", "function": {
                 "name": "github_search_code",
-                "description": "PASO 1 OBLIGATORIO: busca archivos o código en GitHub antes de github_read.",
+                "description": "Busca archivos o código en GitHub antes de github_read.",
                 "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
             }},
             {"type": "function", "function": {
@@ -313,7 +391,8 @@ class Agent:
                 "name": "github_write",
                 "description": (
                     "Escribe un archivo en GitHub. LÍMITE DURO: máximo 50 líneas en 'content'. "
-                    "Para archivos grandes usa file_write + file_append y luego github_upload_project."
+                    "Para archivos grandes, USA EL FORMATO 'FILE: nombre.ext' + bloque ``` en tu "
+                    "respuesta de texto. El sistema lo extraerá y subirá automáticamente."
                 ),
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
@@ -331,8 +410,7 @@ class Agent:
             {"type": "function", "function": {
                 "name": "github_upload_project",
                 "description": (
-                    "Sube UNO O VARIOS archivos a GitHub usando la Git Data API. "
-                    "USA ESTO para subir archivos grandes (más de 50 líneas) que ya tienes en el workspace. "
+                    "Sube uno o varios archivos a GitHub usando la Git Data API. "
                     "Parámetro 'files': diccionario {ruta_en_repo: ruta_local}."
                 ),
                 "parameters": {"type": "object", "properties": {
@@ -428,7 +506,7 @@ class Agent:
             # IMAGEN
             {"type": "function", "function": {
                 "name": "generate_image",
-                "description": "Genera una imagen con Subtom IA Image (Pollinations.AI, modelo flux). La imagen se envía automáticamente al chat.",
+                "description": "Genera una imagen con Subtom IA Image (Pollinations.AI). La imagen se envía automáticamente al chat.",
                 "parameters": {"type": "object", "properties": {
                     "prompt": {"type": "string"},
                 }, "required": ["prompt"]},
@@ -630,9 +708,8 @@ class Agent:
                             "error": f"CONTENIDO DEMASIADO GRANDE: {line_count} líneas (máximo {MAX_LINES_PER_TOOL_CALL})",
                             "instruction": (
                                 f"El bloque tiene {line_count} líneas y el máximo es {MAX_LINES_PER_TOOL_CALL}. "
-                                "Vuelve a intentarlo AHORA con un bloque MÁS PEQUEÑO. "
-                                "Usa file_write para las primeras 50 líneas, y file_append para el resto en bloques de 50. "
-                                "Cuando esté completo, súbelo con github_upload_project."
+                                "USA EL FORMATO 'FILE: nombre.ext' + bloque ``` en tu respuesta de texto. "
+                                "El sistema lo extraerá y lo subirá automáticamente sin límites."
                             ),
                         }
 
@@ -1020,7 +1097,7 @@ class Agent:
                             "error": "VERIFICACIÓN FALLIDA - No se subió",
                             "errors": verify.get("errors"),
                             "warnings": verify.get("warnings"),
-                            "instruction": "El contenido nuevo tiene errores. CORRÍGELOS y vuelve a intentar con contenido DIFERENTE.",
+                            "instruction": "El contenido nuevo tiene errores. CORRÍGELOS y vuelve a intentar.",
                             "_no_retry": True,
                         }
                     if verify.get("warnings"):
@@ -1196,24 +1273,51 @@ class Agent:
                     return {"error": f"HTTP {resp.status}", "detail": data}
                 return {"id": data.get("id"), "url": data.get("url"), "status": data.get("status")}
 
-    async def generate_image(self, prompt: str) -> dict[str, Any]:
+    # ================================================================
+    # GENERACIÓN DE IMÁGENES — POLLINATIONS.AI con reintentos
+    # ================================================================
+
+    async def generate_image(self, prompt: str, _retry: int = 0) -> dict[str, Any]:
+        """
+        Genera una imagen con Pollinations.AI.
+        - Reintenta hasta 3 veces.
+        - Prueba modelos alternativos si el principal falla (500, 502, timeout).
+        - Devuelve _send_file para que el bot la envíe al chat.
+        """
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
         prompt = prompt.strip()
 
         prompt_encoded = aiohttp.helpers.quote(prompt, safe="")
+
+        # Elegir modelo según el intento (rota si falla)
+        model = POLLINATIONS_MODELS[_retry % len(POLLINATIONS_MODELS)]
+
         url = (
             f"https://image.pollinations.ai/prompt/{prompt_encoded}"
-            f"?model=flux&width=1024&height=1024&nologo=true&enhance=true"
+            f"?model={model}&width=1024&height=1024&nologo=true&enhance=true"
         )
 
         try:
-            timeout = aiohttp.ClientTimeout(total=180)
+            timeout = aiohttp.ClientTimeout(total=120)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url) as resp:
+                    if resp.status == 500 or resp.status == 502 or resp.status == 503:
+                        print(f"[POLLINATIONS] HTTP {resp.status} con model={model} (intento {_retry + 1}/3)")
+                        if _retry < 2:
+                            await asyncio.sleep(2)
+                            return await self.generate_image(prompt, _retry + 1)
+                        return {"error": f"Pollinations HTTP {resp.status} tras 3 intentos con modelos distintos"}
                     if resp.status != 200:
                         return {"error": f"Pollinations HTTP {resp.status}"}
                     data = await resp.read()
+
+            if not data or len(data) < 1000:
+                print(f"[POLLINATIONS] Respuesta demasiado pequeña ({len(data)} bytes). Reintentando...")
+                if _retry < 2:
+                    await asyncio.sleep(2)
+                    return await self.generate_image(prompt, _retry + 1)
+                return {"error": "Pollinations devolvió una respuesta vacía o inválida"}
 
             from datetime import datetime
             folder = Path(config.workspace) / "generated"
@@ -1225,18 +1329,29 @@ class Agent:
             target.write_bytes(data)
 
             abs_path = str(target.resolve())
-            print(f"[POLLINATIONS] Imagen generada: {abs_path} ({len(data)} bytes)")
+            print(f"[POLLINATIONS] Imagen generada con {model}: {abs_path} ({len(data)} bytes)")
 
             return {
                 "local_path": abs_path,
                 "_send_file": abs_path,
                 "caption": f"🎨 Imagen creada con Subtom IA Image\n\n_Prompt:_ {prompt[:200]}",
             }
+
         except asyncio.TimeoutError:
-            return {"error": "Pollinations tardó demasiado (timeout 180s)"}
+            print(f"[POLLINATIONS] Timeout con model={model} (intento {_retry + 1}/3)")
+            if _retry < 2:
+                return await self.generate_image(prompt, _retry + 1)
+            return {"error": "Pollinations tardó demasiado tras 3 intentos"}
         except Exception as exc:
+            print(f"[POLLINATIONS] Excepción con model={model}: {type(exc).__name__}: {exc}")
+            if _retry < 2:
+                await asyncio.sleep(2)
+                return await self.generate_image(prompt, _retry + 1)
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+    # ================================================================
+    # ASK
+    # ================================================================
     async def ask(
         self,
         user_id: int,
@@ -1305,21 +1420,19 @@ class Agent:
                     if not tool_calls and finish_reason == "malformed_function_call":
                         malformed_retries += 1
                         if malformed_retries <= 3:
-                            print(f"[MOTOR] malformed_function_call detectado. Reintentando ({malformed_retries}/3)...")
+                            print(f"[MOTOR] malformed_function_call. Reintentando ({malformed_retries}/3)...")
                             messages.append({
                                 "role": "user",
                                 "content": (
                                     "⚠️ TU ÚLTIMO INTENTO FALLÓ con 'malformed_function_call'. "
-                                    "Divide el trabajo en bloques de MÁXIMO 50 líneas. "
-                                    "Usa file_write para el primer bloque y file_append para los siguientes. "
-                                    "NUNCA metas más de 50 líneas en 'content'. "
-                                    "Cuando el archivo esté completo, usa github_upload_project. "
-                                    "AHORA empieza por el PRIMER bloque de 50 líneas con file_write."
+                                    "OBLIGATORIO: escribe el código en un bloque 'FILE: nombre.ext' + ``` en tu respuesta de texto. "
+                                    "NO uses github_write con contenido grande. Solo texto + bloque markdown. "
+                                    "El sistema lo extraerá y subirá automáticamente."
                                 )
                             })
                             continue
                         else:
-                            answer = "⚠️ Gemini falló 3 veces intentando hacer la tool call. Prueba a pedirle bloques de 30 líneas."
+                            answer = "⚠️ Gemini falló 3 veces con 'malformed_function_call'. Prueba de nuevo."
                             await self.save(user_id, channel_id, "assistant", answer)
                             return answer, image_url, files_to_send or None
 
@@ -1334,6 +1447,13 @@ class Agent:
                                 answer = "⚠️ Gemini devolvió un error genérico. Prueba otra vez."
                             else:
                                 answer = f"⚠️ No he recibido respuesta del modelo (finish_reason: {finish_reason})."
+
+                        # OPCIÓN 3: extraer bloques FILE: y subirlos a GitHub
+                        if answer:
+                            subidos = await self._process_file_blocks(answer)
+                            if subidos:
+                                answer += f"\n\n📦 Subí {len(subidos)} archivo(s) a GitHub: {', '.join(subidos)}"
+
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
                         motor.record(model=modelo_actual, task=task, lang=lang, latency=dt, error=False)
@@ -1389,7 +1509,6 @@ class Agent:
                                 await self.save(user_id, channel_id, "assistant", answer)
                                 return answer, image_url, files_to_send or None
 
-                        # Umbral subido a 5 (antes 3)
                         if result_history.count(result_hash) >= 5:
                             print(f"[MOTOR] Estancamiento en '{name}' ({result_history.count(result_hash) + 1} veces). Cortando.")
                             raise RuntimeError(f"Estancamiento en '{name}'.")
