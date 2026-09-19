@@ -24,8 +24,8 @@ IMAGE_EXTENSIONS = {
 
 REPO_PRINCIPAL = "tabloui/subtom-ia"
 
-# Límite duro de líneas por tool call (Gemini rompe el JSON a partir de ~100)
-MAX_LINES_PER_TOOL_CALL = 80
+# Límite duro de líneas por tool call (Gemini rompe el JSON a partir de ~60)
+MAX_LINES_PER_TOOL_CALL = 50
 
 
 class Agent:
@@ -198,18 +198,17 @@ class Agent:
             {"type": "function", "function": {
                 "name": "file_write",
                 "description": (
-                    "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 80 líneas por llamada. "
-                    "Si el archivo es más grande, divídelo: file_write para las primeras 80 líneas, "
-                    "file_append para cada bloque siguiente. NUNCA pongas más de 80 líneas en 'content'."
+                    "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 50 líneas por llamada. "
+                    "Si el archivo es más grande, divídelo en bloques de 50 líneas. "
+                    "NUNCA pongas más de 50 líneas en 'content'."
                 ),
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
             {"type": "function", "function": {
                 "name": "file_append",
                 "description": (
-                    "Añade contenido al final de un archivo. LÍMITE DURO: máximo 80 líneas por llamada. "
-                    "Úsalo para construir archivos grandes: escribe las primeras 80 líneas con file_write, "
-                    "y el resto con file_append en bloques de 80 líneas."
+                    "Añade contenido al final de un archivo. LÍMITE DURO: máximo 50 líneas por llamada. "
+                    "Úsalo para construir archivos grandes en bloques de 50 líneas."
                 ),
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
@@ -277,7 +276,7 @@ class Agent:
             # ============ GITHUB ============
             {"type": "function", "function": {
                 "name": "github_search_code",
-                "description": "PASO 1 OBLIGATORIO: busca archivos o código en GitHub antes de github_read. Query tipo 'filename:ai.py repo:tabloui/subtom-ia'.",
+                "description": "PASO 1 OBLIGATORIO: busca archivos o código en GitHub antes de github_read.",
                 "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
             }},
             {"type": "function", "function": {
@@ -296,7 +295,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_read",
-                "description": "Lee un archivo de un repositorio. La ruta debe ser exacta. Si no estás seguro, usa github_search_code o github_tree ANTES.",
+                "description": "Lee un archivo de un repositorio.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "path": {"type": "string"},
@@ -305,7 +304,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_create_branch",
-                "description": "Crea una rama nueva en un repo. Úsala SIEMPRE antes de escribir para no tocar main.",
+                "description": "Crea una rama nueva en un repo.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "branch": {"type": "string"},
@@ -315,10 +314,9 @@ class Agent:
             {"type": "function", "function": {
                 "name": "github_write",
                 "description": (
-                    "Escribe un archivo en GitHub. LÍMITE DURO: máximo 80 líneas en 'content'. "
-                    "Para archivos grandes, NO uses github_write. Usa file_write + file_append para "
-                    "escribirlo por trozos en el workspace, y luego github_upload_project para subirlo. "
-                    "NUNCA pongas más de 80 líneas en 'content'."
+                    "Escribe un archivo en GitHub. LÍMITE DURO: máximo 50 líneas en 'content'. "
+                    "Para archivos grandes usa file_write + file_append y luego github_upload_project. "
+                    "NUNCA pongas más de 50 líneas en 'content'."
                 ),
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
@@ -336,16 +334,12 @@ class Agent:
             {"type": "function", "function": {
                 "name": "github_upload_project",
                 "description": (
-                    "Sube UNO O VARIOS archivos a GitHub en un solo commit usando la Git Data API. "
-                    "USA ESTO para subir archivos grandes (más de 80 líneas) que ya tienes en el workspace. "
-                    "Lee los archivos del disco y los sube como blobs, sin meter el contenido en el tool call.\n\n"
-                    "EJEMPLO de cómo subir bot.py (211 líneas):\n"
-                    "1) file_write(path='pending_bot.py', content='<80 líneas>')\n"
-                    "2) file_append(path='pending_bot.py', content='<80 líneas>')\n"
-                    "3) file_append(path='pending_bot.py', content='<51 líneas>')\n"
-                    "4) github_upload_project(repo='tabloui/subtom-ia', files={'bot.py': 'pending_bot.py'}, message='Update bot.py')\n\n"
-                    "Parámetro 'files': diccionario {ruta_en_repo: ruta_local}. "
-                    "Rutas locales pueden ser relativas al workspace."
+                    "Sube UNO O VARIOS archivos a GitHub usando la Git Data API. "
+                    "USA ESTO para subir archivos grandes (más de 50 líneas) que ya tienes en el workspace. "
+                    "EJEMPLO: 1) file_write(path='pending_bot.py', content='<50 líneas>'), "
+                    "2) file_append(path='pending_bot.py', content='<50 líneas>') x4, "
+                    "3) github_upload_project(repo='tabloui/subtom-ia', files={'bot.py': 'pending_bot.py'}, message='Update bot.py'). "
+                    "Parámetro 'files': diccionario {ruta_en_repo: ruta_local}."
                 ),
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
@@ -440,16 +434,16 @@ class Agent:
             # ============ IMAGEN ============
             {"type": "function", "function": {
                 "name": "generate_image",
-                "description": "Genera una imagen con Subtom IA Image (Pollinations.AI, modelo flux). Gratis e ilimitada. La imagen se envía automáticamente al chat.",
+                "description": "Genera una imagen con Subtom IA Image (Pollinations.AI, modelo flux). La imagen se envía automáticamente al chat.",
                 "parameters": {"type": "object", "properties": {
-                    "prompt": {"type": "string", "description": "Descripción detallada en inglés (sujeto + estilo + colores + iluminación)"},
+                    "prompt": {"type": "string", "description": "Descripción detallada en inglés"},
                 }, "required": ["prompt"]},
             }},
 
             # ============ SANDBOX ============
             {"type": "function", "function": {
                 "name": "sandbox_run_python",
-                "description": "Ejecuta código Python en sandbox. Si falla dos veces con el mismo error, no reintentes: reporta el error.",
+                "description": "Ejecuta código Python en sandbox.",
                 "parameters": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
             }},
             {"type": "function", "function": {
@@ -621,7 +615,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "discord_send_file",
-                "description": "Envía un archivo del workspace a Discord. Acepta rutas relativas (busca también dentro del workspace) o absolutas.",
+                "description": "Envía un archivo del workspace a Discord.",
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "caption": {"type": "string", "default": ""}}, "required": ["path"]},
             }},
         ]
@@ -631,10 +625,7 @@ class Agent:
     # ================================================================
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
-            # ============================================================
             # GUARD: rechaza bloques > MAX_LINES_PER_TOOL_CALL sin parar el bot
-            # (el bot recibirá el error y volverá a intentarlo dividiendo)
-            # ============================================================
             if name in ("file_write", "file_append", "github_write"):
                 content = args.get("content", "")
                 if isinstance(content, str):
@@ -646,9 +637,8 @@ class Agent:
                             "instruction": (
                                 f"El bloque tiene {line_count} líneas y el máximo es {MAX_LINES_PER_TOOL_CALL}. "
                                 "Vuelve a intentarlo AHORA con un bloque MÁS PEQUEÑO. "
-                                "Si estás escribiendo un archivo grande: usa file_write para las primeras 80 líneas, "
-                                "y file_append para el resto en bloques de 80 líneas. "
-                                "Cuando el archivo esté completo en el workspace, súbelo con github_upload_project."
+                                "Usa file_write para las primeras 50 líneas, y file_append para el resto en bloques de 50. "
+                                "Cuando esté completo, súbelo con github_upload_project."
                             ),
                         }
 
@@ -1285,6 +1275,7 @@ class Agent:
                 call_history: list[str] = []
                 result_history: list[str] = []
                 rounds_used = 0
+                malformed_retries = 0
 
                 while True:
                     rounds_used += 1
@@ -1301,26 +1292,52 @@ class Agent:
 
                     message = choices[0].get("message") or {}
                     tool_calls = self._extract_tool_calls(message)
+                    finish_reason = choices[0].get("finish_reason", "unknown")
 
                     assistant_message: dict[str, Any] = {"role": "assistant", "content": message.get("content")}
                     if tool_calls:
                         assistant_message["tool_calls"] = tool_calls
                     messages.append(assistant_message)
 
+                    # ====================================================
+                    # REINTENTO AUTOMÁTICO PARA malformed_function_call
+                    # ====================================================
+                    if not tool_calls and finish_reason == "malformed_function_call":
+                        malformed_retries += 1
+                        if malformed_retries <= 3:
+                            print(f"[MOTOR] malformed_function_call detectado. Reintentando ({malformed_retries}/3)...")
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "⚠️ TU ÚLTIMO INTENTO FALLÓ con 'malformed_function_call'. "
+                                    "Eso significa que intentaste meter demasiado contenido en una sola tool call. "
+                                    "OBLIGATORIO: divide el trabajo en bloques de MÁXIMO 50 líneas. "
+                                    "Usa file_write para el primer bloque y file_append para los siguientes. "
+                                    "NUNCA metas más de 50 líneas en 'content'. "
+                                    "Cuando el archivo esté completo, usa github_upload_project. "
+                                    "AHORA empieza por el PRIMER bloque de 50 líneas con file_write."
+                                )
+                            })
+                            continue
+                        else:
+                            answer = (
+                                "⚠️ Gemini falló 3 veces intentando hacer la tool call. "
+                                "Prueba a pedirle bloques de 30 líneas."
+                            )
+                            await self.save(user_id, channel_id, "assistant", answer)
+                            return answer, image_url, files_to_send or None
+
                     if not tool_calls:
                         answer = (message.get("content") or "").strip()
                         if not answer:
-                            finish = choices[0].get("finish_reason", "unknown")
-                            if finish in ("safety", "recitation", "blocked", "prohibited_content"):
-                                answer = f"⚠️ Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish}). Prueba a reformular el mensaje."
-                            elif finish == "max_tokens":
+                            if finish_reason in ("safety", "recitation", "blocked", "prohibited_content"):
+                                answer = f"⚠️ Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish_reason})."
+                            elif finish_reason == "max_tokens":
                                 answer = "⚠️ La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
-                            elif finish == "malformed_function_call":
-                                answer = "⚠️ El modelo intentó hacer una llamada a herramienta demasiado grande y se rompió. Vuelve a intentarlo."
-                            elif finish == "other":
+                            elif finish_reason == "other":
                                 answer = "⚠️ Gemini devolvió un error genérico. Prueba otra vez."
                             else:
-                                answer = f"⚠️ No he recibido respuesta del modelo (finish_reason: {finish})."
+                                answer = f"⚠️ No he recibido respuesta del modelo (finish_reason: {finish_reason})."
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
                         motor.record(model=modelo_actual, task=task, lang=lang, latency=dt, error=False)
@@ -1357,8 +1374,6 @@ class Agent:
                             if result.get("_send_file"):
                                 files_to_send.append(result["_send_file"])
 
-                        # _no_retry solo se respeta si es un error real (verificación/tests)
-                        # El guard de tamaño NO usa _no_retry, así que el bot reintenta dividiendo
                         if isinstance(result, dict) and result.get("_no_retry"):
                             err_msg = result.get("error", "error desconocido")
                             extra = result.get("instruction", "")
