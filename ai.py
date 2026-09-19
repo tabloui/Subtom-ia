@@ -408,9 +408,9 @@ class Agent:
             # ============ IMAGEN (Pollinations) ============
             {"type": "function", "function": {
                 "name": "generate_image",
-                "description": "Genera una imagen a partir de un prompt usando Pollinations.AI (modelo flux, gratis e ilimitado). Ideal para logos, ilustraciones y avatares.",
+                "description": "Genera una imagen con Subtom IA Image (Pollinations.AI, modelo flux). Gratis e ilimitada. La imagen se enviará automáticamente al chat, no necesitas llamar a discord_send_file.",
                 "parameters": {"type": "object", "properties": {
-                    "prompt": {"type": "string", "description": "Descripción detallada de la imagen, en inglés o español"},
+                    "prompt": {"type": "string", "description": "Descripción detallada en inglés (sujeto + estilo + colores + iluminación)"},
                 }, "required": ["prompt"]},
             }},
 
@@ -1121,7 +1121,8 @@ class Agent:
         Genera una imagen con Pollinations.AI.
         - Gratis, sin API key, sin registro.
         - Modelo flux: mejor manejo de texto (ideal para logos).
-        - Devuelve la imagen directamente en bytes (no hay polling).
+        - Devuelve la imagen en bytes (no hay polling).
+        - La imagen se envía automáticamente al chat gracias a _send_file.
         """
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
@@ -1161,7 +1162,9 @@ class Agent:
             return {
                 "image_url": url,
                 "local_path": local_path,
-                "note": "Usa discord_send_file con este local_path.",
+                "_send_file": local_path,
+                "caption": f"🎨 Imagen creada con Subtom IA Image\n\n_Prompt:_ {prompt[:200]}",
+                "note": "La imagen se envía automáticamente al chat.",
             }
         except asyncio.TimeoutError:
             return {"error": "Pollinations tardó demasiado (timeout 180s)"}
