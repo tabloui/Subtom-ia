@@ -1,506 +1,251 @@
 from __future__ import annotations
 
-import asyncio
-import io
-import time
-from pathlib import Path
-
-import aiohttp
-from aiohttp import web
-
-import discord
-
-from ai import agent
-from config import config
-from connector import connector
-from motor import motor
-
-
-# ============================================================
-# UPTIME
-# ============================================================
-
-_START_TIME = time.monotonic()
-
-
-def _uptime_seconds() -> float:
-    return time.monotonic() - _START_TIME
-
-
-def _uptime_human() -> str:
-    secs = int(_uptime_seconds())
-    days, rem = divmod(secs, 86400)
-    hours, rem = divmod(rem, 3600)
-    mins, secs = divmod(rem, 60)
-    parts = []
-    if days:
-        parts.append(f"{days}d")
-    if hours or days:
-        parts.append(f"{hours}h")
-    if mins or hours or days:
-        parts.append(f"{mins}m")
-    parts.append(f"{secs}s")
-    return " ".join(parts)
-
-
-# ============================================================
-# DISCORD
-# ============================================================
-
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-intents.members = True
-
-client = discord.Client(intents=intents)
-
-
-# ============================================================
-# HTTP HEALTH SERVER
-# ============================================================
-
-async def health(_: web.Request) -> web.Response:
-    return web.json_response({
-        "ok": True,
-        "service": config.bot_name,
-        "provider": connector.provider,
-        "model": config.ai_model,
-        "uptime_seconds": round(_uptime_seconds(), 1),
-        "uptime_human": _uptime_human(),
-    })
-
-
-async def root(_: web.Request) -> web.Response:
-    return web.Response(
-        text=f"{config.bot_name} online ({connector.provider})"
-    )
-
-
-async def metrics(_: web.Request) -> web.Response:
-    try:
-        data = motor.snapshot()
-        data["rotador"] = connector.stats()
-        data["uptime_seconds"] = round(_uptime_seconds(), 1)
-        data["uptime_human"] = _uptime_human()
-    except Exception as exc:
-        return web.json_response(
-            {"error": f"{type(exc).__name__}: {exc}"},
-            status=500,
-        )
-    return web.json_response(data)
-
-
-async def start_http() -> web.AppRunner:
-
-    app = web.Application()
-
-    app.router.add_get("/", root)
-    app.router.add_get("/health", health)
-    app.router.add_get("/api/health", health)
-    app.router.add_get("/api/status", health)
-    app.router.add_get("/metrics", metrics)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-
-    site = web.TCPSite(
-        runner,
-        "0.0.0.0",
-        config.port,
-    )
-    await site.start()
-
-    print(f"HTTP server escuchando en puerto {config.port}")
-    return runner
+import os
+from dataclasses import dataclass, field
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-async def send_long(
-    chat: discord.Messageable,
-    text: str,
-) -> None:
-    text = text or "Sin respuesta."
-    for i in range(0, len(text), 1900):
-        await chat.send(text[i:i + 1900])
+def _env(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip().strip('"').strip("'")
+    return value if value else default
 
 
-async def should_reply(message: discord.Message) -> bool:
-    if message.author.bot:
-        return False
-    if message.author.id != config.allowed_user_id:
-        return False
-    if isinstance(message.channel, discord.DMChannel):
-        return True
-    return (
-        client.user is not None
-        and client.user in message.mentions
+def _required(name: str) -> str:
+    value = _env(name)
+    if not value:
+        raise RuntimeError(f"Falta la variable {name}")
+    return value
+
+
+def _int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} debe ser un entero (recibido: {raw!r})") from exc
+    if not minimum <= value <= maximum:
+        raise RuntimeError(
+            f"{name} debe estar entre {minimum} y {maximum} (recibido: {value})"
+        )
+    return value
+
+
+def _float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} debe ser un número (recibido: {raw!r})") from exc
+    if not minimum <= value <= maximum:
+        raise RuntimeError(
+            f"{name} debe estar entre {minimum} y {maximum} (recibido: {value})"
+        )
+    return value
+
+
+# ============================================================
+# MODELOS
+# ============================================================
+
+@dataclass(frozen=True)
+class AISlot:
+    index: int
+    key: str
+    model: str
+    base_url: str = ""
+
+
+@dataclass(frozen=True)
+class Settings:
+    # Discord
+    discord_token: str
+    allowed_user_id: int
+
+    # Database
+    database_url: str
+
+    # IA
+    ai_slots: list[AISlot]
+    ai_temperature: float
+    ai_max_tokens: int
+    ai_max_tool_rounds: int
+    ai_timeouts_seconds: int
+
+    # Bot
+    bot_name: str
+
+    # Memory
+    memory_limit: int
+    memory_messages: int
+
+    # Server
+    workspace: str
+    port: int
+
+    # Optional APIs
+    github_token: str | None
+    vercel_token: str | None
+
+    # FLUX
+    flux_api_key_1: str | None
+    flux_api_key_2: str | None
+    flux_base_url: str
+    flux_endpoint: str
+
+    @property
+    def ai_model(self) -> str:
+        if self.ai_slots:
+            return self.ai_slots[0].model
+        return "unknown"
+
+
+# ============================================================
+# CARGA DE SLOTS (ILIMITADOS)
+# ============================================================
+
+def _load_slots(default_model: str) -> list[AISlot]:
+    """
+    Carga todos los slots posibles:
+    - AI_API_KEY (sin número) como slot 0 (compatibilidad)
+    - AI_API_KEY_1, AI_API_KEY_2, ... hasta que no haya más
+
+    Para cada slot N:
+    - AI_API_KEY_N     (obligatorio para que el slot exista)
+    - AI_MODEL_N       (opcional, usa default_model)
+    - AI_API_BASE_URL_N (opcional, para forzar proveedor)
+    """
+    slots: list[AISlot] = []
+
+    # Slot 0: compatibilidad con AI_API_KEY sin número
+    main_key = _env("AI_API_KEY")
+    if main_key:
+        main_model = _env("AI_MODEL", default_model) or default_model
+        main_url = _env("AI_API_BASE_URL", "") or ""
+        slots.append(AISlot(index=0, key=main_key, model=main_model, base_url=main_url))
+
+    # Slots 1, 2, 3... sin límite, paramos cuando no haya key
+    n = 1
+    empty_streak = 0
+    while True:
+        key = _env(f"AI_API_KEY_{n}")
+        if not key:
+            empty_streak += 1
+            # Tolerar hasta 5 huecos consecutivos antes de parar
+            if empty_streak >= 5:
+                break
+            n += 1
+            continue
+        empty_streak = 0
+
+        model = _env(f"AI_MODEL_{n}") or default_model
+        base_url = _env(f"AI_API_BASE_URL_{n}") or ""
+        slots.append(AISlot(index=n, key=key, model=model, base_url=base_url))
+        n += 1
+
+        # Límite de seguridad para no entrar en bucle infinito si hay muchas vars
+        if n > 100:
+            print("[CONFIG] Aviso: más de 100 slots detectados, parando.")
+            break
+
+    return slots
+
+
+# ============================================================
+# CARGA DE SETTINGS
+# ============================================================
+
+def load_settings() -> Settings:
+
+    # --- DISCORD ---
+    discord_token = _required("DISCORD_BOT_TOKEN")
+
+    try:
+        allowed_user_id = int(_required("DISCORD_ALLOWED_USER_ID"))
+    except ValueError as exc:
+        raise RuntimeError("DISCORD_ALLOWED_USER_ID debe ser numérico") from exc
+
+    # --- DATABASE ---
+    database_url = _required("DATABASE_URL")
+
+    # --- IA SLOTS ---
+    default_model = _env("AI_MODEL", "gemini-flash-lite-latest") or "gemini-flash-lite-latest"
+    slots = _load_slots(default_model)
+
+    if not slots:
+        raise RuntimeError("Configura al menos AI_API_KEY_1")
+
+    # Ordenar por índice
+    slots.sort(key=lambda s: s.index)
+
+    # --- TEMPERATURA ---
+    ai_temperature = _float("AI_TEMPERATURE", 0.7, 0.0, 2.0)
+
+    # --- SETTINGS ---
+    return Settings(
+        # Discord
+        discord_token=discord_token,
+        allowed_user_id=allowed_user_id,
+
+        # Database
+        database_url=database_url,
+
+        # IA
+        ai_slots=slots,
+        ai_temperature=ai_temperature,
+        ai_max_tokens=_int("AI_MAX_TOKENS", 4096, 16, 32768),
+        ai_max_tool_rounds=_int("MAX_SAFETY_ROUNDS", 100, 1, 500),
+        ai_timeouts_seconds=_int("AI_TIMEOUT_SECONDS", 600, 10, 3600),
+
+        # Bot
+        bot_name=_env("BOT_NAME", "Subtom IA") or "Subtom IA",
+
+        # Memory
+        memory_limit=_int("MEMORY_LIMIT", 120, 0, 10080),
+        memory_messages=_int("MEMORY_MESSAGES", 12, 2, 200),
+
+        # Server
+        workspace=_env("SUBTOM_WORKSPACE", "./workspace") or "./workspace",
+        port=_int("PORT", 8080, 1, 65535),
+
+        # Optional APIs
+        github_token=_env("GITHUB_TOKEN"),
+        vercel_token=_env("VERCEL_TOKEN"),
+
+        # FLUX
+        flux_api_key_1=_env("FLUX_API_KEY_1"),
+        flux_api_key_2=_env("FLUX_API_KEY_2"),
+        flux_base_url=_env("FLUX_BASE_URL", "https://api.bfl.ai/v1") or "https://api.bfl.ai/v1",
+        flux_endpoint=_env("FLUX_ENDPOINT", "flux-2-flex") or "flux-2-flex",
     )
 
 
-async def extract_prompt(
-    message: discord.Message,
-) -> tuple[str, bool]:
-
-    content = message.content.strip()
-    flag_image = False
-    lowered = content.lower()
-
-    prefixes = (
-        "!image ", "/image ", "image: ",
-        "!imagen ", "/imagen ", "imagen: ",
-        "!draw ", "/draw ",
-        "genera: ", "dibuja: ",
-    )
-
-    for prefix in prefixes:
-        if lowered.startswith(prefix):
-            return (content[len(prefix):].strip(), True)
-
-    if message.attachments:
-        flag_image = True
-
-    return (content.strip(), flag_image)
-
-
 # ============================================================
-# ADJUNTOS
+# INSTANCIA GLOBAL + RESUMEN EN LOG
 # ============================================================
 
-async def download_attachments(
-    message: discord.Message,
-) -> list[dict]:
-
-    if not message.attachments:
-        return []
-
-    uploads = Path(config.workspace) / "uploads"
-    uploads.mkdir(parents=True, exist_ok=True)
-
-    items: list[dict] = []
-
-    async with aiohttp.ClientSession() as session:
-        for att in message.attachments:
-            safe_name = f"{message.id}_{att.filename}"
-            target = uploads / safe_name
-
-            try:
-                async with session.get(att.url) as resp:
-                    if resp.status >= 400:
-                        continue
-                    data = await resp.read()
-                    target.write_bytes(data)
-
-                    items.append({
-                        "path": str(target),
-                        "filename": att.filename,
-                        "content_type": att.content_type or "",
-                        "url": att.url,
-                        "size": len(data),
-                        "is_image": (
-                            (att.content_type or "").startswith("image/")
-                        ),
-                    })
-                    print(f"Adjunto guardado: {target}")
-
-            except Exception as exc:
-                print(f"Error descargando {att.filename}: {exc}")
-
-    return items
-
-
-# ============================================================
-# CONTEXTO
-# ============================================================
-
-def build_user_context(
-    message: discord.Message,
-    attachments: list[dict],
-) -> str:
-
-    user = message.author
-
-    lines = [
-        "[Contexto Discord]",
-        f"- Usuario: {user.display_name}",
-        f"- Nombre: {user.name}",
-        f"- ID: {user.id}",
-        f"- Avatar: {user.display_avatar.url}",
-        f"- Canal ID actual: {message.channel.id}",
-    ]
-
-    if message.guild:
-        lines.append(f"- Servidor: {message.guild.name}")
-        lines.append(f"- Servidor ID: {message.guild.id}")
-        lines.append(f"- Miembros: {message.guild.member_count}")
-
-        if message.guild.icon:
-            lines.append(f"- Icono servidor: {message.guild.icon.url}")
-
-    if isinstance(message.channel, discord.TextChannel):
-        lines.append(f"- Canal: #{message.channel.name}")
-
-        if message.channel.topic:
-            lines.append(f"- Tema del canal: {message.channel.topic}")
-
-    elif isinstance(message.channel, discord.DMChannel):
-        lines.append("- Canal: DM")
-
-    if attachments:
-        lines.append("- Archivos adjuntos del usuario:")
-
-        for att in attachments:
-            kind = "imagen" if att["is_image"] else "archivo"
-            lines.append(
-                f"  * [{kind}] {att['filename']} "
-                f"({att['content_type']}) "
-                f"-> ruta local: {att['path']}"
-            )
-
-        has_image = any(a["is_image"] for a in attachments)
-        has_pdf = any(
-            (a["content_type"] or "") == "application/pdf"
-            for a in attachments
-        )
-        has_text = any(
-            (a["content_type"] or "").startswith("text/")
-            for a in attachments
-        )
-
-        lines.append("")
-        lines.append("[Instrucciones]")
-
-        if has_image:
-            lines.append(
-                "- El usuario adjuntó una imagen. Analízala directamente."
-            )
-
-        if has_pdf:
-            lines.append(
-                "- El usuario adjuntó un PDF. Si necesitas leerlo, "
-                "usa file_read_pdf con la ruta local indicada."
-            )
-
-        if has_text:
-            lines.append(
-                "- El usuario adjuntó un archivo de texto. Si necesitas "
-                "leerlo, usa file_read_text o file_read_any con la "
-                "ruta local."
-            )
-
-    return "\n".join(lines)
-
-
-# ============================================================
-# ENVÍO DE ARCHIVOS
-# ============================================================
-
-def _resolve_workspace_path(raw: str | Path) -> Path | None:
-    if isinstance(raw, str):
-        raw = raw.strip()
-        if not raw:
-            return None
-
-    p = Path(raw)
-
-    if p.is_absolute():
-        if p.exists() and p.is_file():
-            return p
-        return None
-
-    if p.exists() and p.is_file():
-        return p.resolve()
-
-    workspace_root = Path(config.workspace)
-    candidate = workspace_root / raw
-    if candidate.exists() and candidate.is_file():
-        return candidate.resolve()
-
-    candidate = workspace_root / p.name
-    if candidate.exists() and candidate.is_file():
-        return candidate.resolve()
-
-    candidate = workspace_root / "generated" / p.name
-    if candidate.exists() and candidate.is_file():
-        return candidate.resolve()
-
-    candidate = workspace_root / "uploads" / p.name
-    if candidate.exists() and candidate.is_file():
-        return candidate.resolve()
-
-    return None
-
-
-async def send_files(
-    chat: discord.Messageable,
-    files: list,
-) -> None:
-
-    valid: list[discord.File] = []
-
-    for item in files:
-        try:
-            if isinstance(item, (str, Path)):
-                resolved = _resolve_workspace_path(item)
-                if resolved is not None:
-                    valid.append(discord.File(resolved))
-                    print(f"[SEND_FILES] OK: {item} -> {resolved}")
-                else:
-                    print(f"[SEND_FILES] NO ENCONTRADO: {item}")
-                    try:
-                        await chat.send(f"⚠️ No pude encontrar el archivo: `{item}`")
-                    except Exception:
-                        pass
-
-            elif isinstance(item, tuple) and len(item) == 2:
-                name, data = item
-                if isinstance(data, bytes):
-                    valid.append(
-                        discord.File(io.BytesIO(data), filename=name)
-                    )
-
-        except Exception as exc:
-            print(f"Error preparando archivo: {exc}")
-
-    for i in range(0, len(valid), 10):
-        batch = valid[i:i + 10]
-        try:
-            await chat.send(files=batch)
-            print(f"[SEND_FILES] Enviados {len(batch)} archivos")
-        except Exception as exc:
-            print(f"Error enviando lote: {exc}")
-
-
-# ============================================================
-# IMAGEN GENERADA
-# ============================================================
-
-async def send_generated_image(
-    chat: discord.Messageable,
-    image_url: str,
-) -> None:
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(image_url) as resp:
-                if resp.status < 400:
-                    data = await resp.read()
-                    await chat.send(
-                        file=discord.File(
-                            io.BytesIO(data),
-                            filename="subtom.png",
-                        )
-                    )
-                    return
-
-                await chat.send(f"Imagen generada: {image_url}")
-
-    except Exception as exc:
-        print(f"Error descargando imagen generada: {exc}")
-        try:
-            await chat.send(f"Imagen generada: {image_url}")
-        except Exception:
-            pass
-
-
-# ============================================================
-# DISCORD EVENTS
-# ============================================================
-
-@client.event
-async def on_ready() -> None:
-    print(
-        f"{config.bot_name} | "
-        f"{len(config.ai_slots)} slots | "
-        f"principal: {connector.provider} | "
-        f"modelo: {config.ai_model}"
-    )
-
-
-@client.event
-async def on_message(message: discord.Message) -> None:
-
-    if not await should_reply(message):
-        return
-
-    prompt, flag_image = await extract_prompt(message)
-    attachments = await download_attachments(message)
-
-    if not prompt and not attachments:
-        await message.channel.send("No entendí tu mensaje.")
-        return
-
-    user_context = build_user_context(message, attachments)
-    full_prompt = f"{user_context}\n\n{prompt}".strip()
-
-    try:
-        await message.add_reaction("⏳")
-    except Exception:
-        pass
-
-    try:
-        result = await agent.ask(
-            message.author.id,
-            message.channel.id,
-            full_prompt,
-            force_image=flag_image,
-        )
-
-    except Exception as exc:
-        print(f"Error procesando mensaje: {exc}")
-        await message.channel.send(f"Error: {exc}")
-        return
-
-    finally:
-        try:
-            await message.remove_reaction("⏳", client.user)
-        except Exception:
-            pass
-
-    files = None
-
-    if isinstance(result, tuple) and len(result) == 3:
-        response, image_url, files = result
-    else:
-        response, image_url = result
-
-    if response:
-        await send_long(message.channel, response)
-
-    if files:
-        await send_files(message.channel, files)
-
-    if image_url and not files:
-        await send_generated_image(message.channel, image_url)
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-async def main() -> None:
-
-    runner = None
-
-    try:
-        await agent.init()
-        runner = await start_http()
-        await client.start(config.discord_token)
-
-    finally:
-        print("Cerrando Subtom...")
-        await connector.close()
-        await agent.close()
-        await client.close()
-        if runner is not None:
-            await runner.cleanup()
-
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
-
-if __name__ == "__main__":
-    asyncio.run(main())
+config = load_settings()
+
+print("=" * 60)
+print(f"[CONFIG] Bot: {config.bot_name}")
+print(f"[CONFIG] Slots de IA: {len(config.ai_slots)}")
+for slot in config.ai_slots:
+    key_preview = (slot.key[:12] + "...") if len(slot.key) > 12 else slot.key
+    url_preview = slot.base_url or "(auto)"
+    print(f"  #{slot.index}: {key_preview} | modelo={slot.model} | url={url_preview}")
+print(f"[CONFIG] Temperatura: {config.ai_temperature}")
+print(f"[CONFIG] Max tokens: {config.ai_max_tokens}")
+print(f"[CONFIG] Timeout: {config.ai_timeouts_seconds}s")
+print(f"[CONFIG] Memoria: {config.memory_limit} min, {config.memory_messages} mensajes")
+print(f"[CONFIG] Workspace: {config.workspace}")
+print(f"[CONFIG] Puerto HTTP: {config.port}")
+print("=" * 60)
