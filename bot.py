@@ -17,7 +17,7 @@ from motor import motor
 
 
 # ============================================================
-# UPTIME (MEJORA 3)
+# UPTIME
 # ============================================================
 
 _START_TIME = time.monotonic()
@@ -294,6 +294,61 @@ def build_user_context(
 
 
 # ============================================================
+# RESOLUCIÓN DE RUTAS (CRÍTICO PARA ENVIAR ARCHIVOS)
+# ============================================================
+
+def _resolve_workspace_path(raw: str | Path) -> Path | None:
+    """
+    Resuelve una ruta intentando varias ubicaciones:
+    1) Absoluta tal cual
+    2) Relativa al CWD
+    3) Relativa al workspace
+    4) Solo el nombre dentro del workspace
+    5) Dentro de workspace/generated
+    6) Dentro de workspace/uploads
+    """
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+
+    p = Path(raw)
+
+    # 1) Absoluta
+    if p.is_absolute():
+        if p.exists() and p.is_file():
+            return p
+        return None
+
+    # 2) Relativa al CWD
+    if p.exists() and p.is_file():
+        return p.resolve()
+
+    # 3) Relativa al workspace
+    workspace_root = Path(config.workspace)
+    candidate = workspace_root / raw
+    if candidate.exists() and candidate.is_file():
+        return candidate.resolve()
+
+    # 4) Solo el nombre dentro del workspace
+    candidate = workspace_root / p.name
+    if candidate.exists() and candidate.is_file():
+        return candidate.resolve()
+
+    # 5) Dentro de workspace/generated
+    candidate = workspace_root / "generated" / p.name
+    if candidate.exists() and candidate.is_file():
+        return candidate.resolve()
+
+    # 6) Dentro de workspace/uploads
+    candidate = workspace_root / "uploads" / p.name
+    if candidate.exists() and candidate.is_file():
+        return candidate.resolve()
+
+    return None
+
+
+# ============================================================
 # ENVÍO DE ARCHIVOS
 # ============================================================
 
@@ -307,9 +362,16 @@ async def send_files(
     for item in files:
         try:
             if isinstance(item, (str, Path)):
-                path = Path(item)
-                if path.exists():
-                    valid.append(discord.File(path))
+                resolved = _resolve_workspace_path(item)
+                if resolved is not None:
+                    valid.append(discord.File(resolved))
+                    print(f"[SEND_FILES] OK: {item} -> {resolved}")
+                else:
+                    print(f"[SEND_FILES] NO ENCONTRADO: {item}")
+                    try:
+                        await chat.send(f"⚠️ No pude encontrar el archivo: `{item}`")
+                    except Exception:
+                        pass
 
             elif isinstance(item, tuple) and len(item) == 2:
                 name, data = item
@@ -325,12 +387,13 @@ async def send_files(
         batch = valid[i:i + 10]
         try:
             await chat.send(files=batch)
+            print(f"[SEND_FILES] Enviados {len(batch)} archivos")
         except Exception as exc:
             print(f"Error enviando lote: {exc}")
 
 
 # ============================================================
-# IMAGEN GENERADA
+# IMAGEN GENERADA (fallback por URL)
 # ============================================================
 
 async def send_generated_image(
@@ -371,8 +434,7 @@ async def on_ready() -> None:
         f"{config.bot_name} | "
         f"{len(config.ai_slots)} slots | "
         f"principal: {connector.provider} | "
-        f"modelo: {config.ai_model} | "
-        f"uptime desde arranque: 0s"
+        f"modelo: {config.ai_model}"
     )
 
 
@@ -423,13 +485,17 @@ async def on_message(message: discord.Message) -> None:
     else:
         response, image_url = result
 
-    await send_long(message.channel, response)
+    # 1. Enviar la respuesta de texto
+    if response:
+        await send_long(message.channel, response)
 
-    if image_url:
-        await send_generated_image(message.channel, image_url)
-
+    # 2. Enviar archivos del workspace (imágenes generadas, bloques FILE:, etc.)
     if files:
         await send_files(message.channel, files)
+
+    # 3. Solo si no hay archivos, enviar imagen por URL (evita duplicados)
+    if image_url and not files:
+        await send_generated_image(message.channel, image_url)
 
 
 # ============================================================
