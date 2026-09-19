@@ -17,24 +17,15 @@ from config import config, AISlot
 def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if forced:
         forced_map = {
-            "ollama": ("ollama", "https://ollama.com/v1"),
-            "aimlapi": ("aimlapi", "https://api.aimlapi.com/v1"),
-            "together": ("together", "https://api.together.xyz/v1"),
-            "deepinfra": ("deepinfra", "https://api.deepinfra.com/v1/openai"),
-            "local": ("local", os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
-            "termux": ("termux", os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
-            "freegpt4": ("freegpt4", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:5500")),
-            "puter": ("puter", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:8741/v1")),
             "gemini": ("gemini", os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta"),
             "groq": ("groq", "https://api.groq.com/openai/v1"),
-            "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
             "openai": ("openai", "https://api.openai.com/v1"),
-            "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
+            "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
             "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
-            "together_ai": ("together", "https://api.together.xyz/v1"),
+            "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
+            "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
             "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
             "xai": ("xai", "https://api.x.ai/v1"),
-            "bytez": ("bytez", "https://api.bytez.com/models/v2/openai/v1"),
         }
         if forced.lower() in forced_map:
             return forced_map[forced.lower()]
@@ -45,7 +36,6 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     # === Gemini (clave AQ. o URL de Google) ===
     if key.startswith("AQ.") or key.startswith("AIza") or "generativelanguage.googleapis.com" in url_env:
         url = url_env or "https://generativelanguage.googleapis.com/v1beta"
-        # Asegurar que NO acabe en /openai (usamos el endpoint nativo)
         if url.rstrip("/").endswith("/openai"):
             url = url.rstrip("/")[:-7]
         return "gemini", url
@@ -54,7 +44,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if key.startswith("gsk_"):
         return "groq", "https://api.groq.com/openai/v1"
 
-    # === Otros OpenAI-compatibles por prefijo de clave ===
+    # === Otros por prefijo ===
     if key.startswith("sk-ant-"):
         return "anthropic", "https://api.anthropic.com/v1"
     if key.startswith("sk-or-v1-"):
@@ -75,10 +65,6 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if len(key) == 36 and key.count("-") == 4:
         return "sambanova", "https://api.sambanova.ai/v1"
 
-    if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
-        return "bytez", "https://api.bytez.com/models/v2/openai/v1"
-
-    # Fallback: si hay URL configurada, usarla como OpenAI-compatible
     if url_env:
         return "openai", url_env
 
@@ -96,9 +82,7 @@ class FastCache:
     @staticmethod
     def _key(messages: list[dict], model: str) -> str:
         raw = json.dumps([messages, model], sort_keys=True, default=str)
-        return hashlib.blake2b(
-            raw.encode("utf-8", "ignore"), digest_size=16
-        ).hexdigest()
+        return hashlib.blake2b(raw.encode("utf-8", "ignore"), digest_size=16).hexdigest()
 
     def get(self, messages: list[dict], model: str) -> dict | None:
         k = self._key(messages, model)
@@ -173,12 +157,10 @@ class AIConnector:
             "Eres Subtom IA, el asistente personal de Amin. Hablas siempre en español y eres "
             "súper amable, cálido y cercano, como un buen amigo que sabe programar. Te gusta "
             "conversar: das contexto, explicas con detalle, y tus respuestas son largas y "
-            "completas, nunca de una línea seca. Usas un tono natural, con humor seco cuando "
-            "encaja, sin exagerar con emojis. Eres técnico cuando hace falta pero sin ser "
-            "pedante.\n\n"
+            "completas, nunca de una línea seca.\n\n"
             "FORMATO DE RESPUESTA: Separa tus ideas en párrafos cortos con líneas en blanco "
             "entre ellos. Usa listas con guiones cuando enumeres cosas. Pon el código en "
-            "bloques con ```. No metas todo en un solo bloque de texto.\n\n"
+            "bloques con ```.\n\n"
             "Tienes herramientas reales. Úsalas cuando toca. Si no estás seguro de la ruta "
             "de un archivo en GitHub, usa github_search_code o github_tree ANTES de "
             "github_read. Nunca inventes contenido: si una herramienta falla, dilo.\n\n"
@@ -213,34 +195,21 @@ class AIConnector:
     def _mark_failure(self, slot: AISlot, cooldown: float, reason: str) -> None:
         self._cooldowns[slot.index] = self._now() + cooldown
         self._fail_count[slot.index] = self._fail_count.get(slot.index, 0) + 1
-        forced = (
-            os.getenv(f"AI_PROVIDER_{slot.index}")
-            if slot.index > 0
-            else os.getenv("AI_PROVIDER")
-        )
-        provider, _ = detect_provider(slot.key, forced)
-        print(f"[CONNECTOR] #{slot.index} {provider} → {reason} (cd {cooldown:.0f}s)")
+        print(f"[CONNECTOR] #{slot.index} → {reason} (cd {cooldown:.0f}s)")
 
     def _mark_success(self, slot: AISlot) -> None:
         self._cursor = slot.index
         self._fail_count[slot.index] = 0
         if self._last_used != slot.index:
-            forced = (
-                os.getenv(f"AI_PROVIDER_{slot.index}")
-                if slot.index > 0
-                else os.getenv("AI_PROVIDER")
-            )
-            provider, _ = detect_provider(slot.key, forced)
-            print(f"[CONNECTOR] Usando slot #{slot.index} ({provider})")
+            print(f"[CONNECTOR] Usando slot #{slot.index}")
             self._last_used = slot.index
 
     # ============================================================
-    # GEMINI NATIVO con soporte de tool calling
+    # GEMINI NATIVO (con fix del error 400 / thought signatures)
     # ============================================================
 
     @staticmethod
     def _tools_to_gemini(tools: list[dict] | None) -> list[dict] | None:
-        """Convierte tools en formato OpenAI a formato Gemini."""
         if not tools:
             return None
         declarations = []
@@ -255,7 +224,6 @@ class AIConnector:
 
     @staticmethod
     def _messages_to_gemini(messages: list[dict]) -> tuple[dict, list[dict]]:
-        """Convierte mensajes OpenAI a formato Gemini. Devuelve (systemInstruction, contents)."""
         system_parts: list[dict] = []
         contents: list[dict] = []
 
@@ -289,19 +257,23 @@ class AIConnector:
                 parts = []
                 if content:
                     parts.append({"text": content})
-                for call in m["tool_calls"]:
+                for idx, call in enumerate(m["tool_calls"]):
                     fn = call.get("function", {})
                     raw_args = fn.get("arguments", "{}")
                     try:
                         args_dict = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                     except Exception:
                         args_dict = {}
-                    parts.append({
+                    part = {
                         "functionCall": {
                             "name": fn.get("name", ""),
                             "args": args_dict,
                         }
-                    })
+                    }
+                    # FIX error 400: thought_signature obligatoria en la primera tool_call
+                    if idx == 0:
+                        part["thoughtSignature"] = "skip_thought_signature_validator"
+                    parts.append(part)
                 contents.append({"role": "model", "parts": parts})
                 continue
 
@@ -325,7 +297,6 @@ class AIConnector:
 
     @staticmethod
     def _gemini_response_to_openai(data: dict, model: str) -> dict:
-        """Convierte respuesta de Gemini a formato OpenAI, incluyendo tool_calls."""
         text = ""
         tool_calls = []
         candidates = data.get("candidates", [])
@@ -372,7 +343,7 @@ class AIConnector:
         base_url = (os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
         if base_url.endswith("/openai"):
             base_url = base_url[:-7]
-        model = slot.model or "gemini-3.5-flash-lite"
+        model = slot.model or "gemini-flash-lite-latest"
         endpoint = f"{base_url}/models/{model}:generateContent?key={slot.key}"
 
         system_instruction, contents = self._messages_to_gemini(messages)
@@ -411,6 +382,9 @@ class AIConnector:
             if response.status == 404:
                 self._mark_failure(slot, 120, "404 modelo")
                 raise RuntimeError("gemini 404")
+            if response.status == 400:
+                self._mark_failure(slot, 30, "400 payload")
+                raise RuntimeError(f"gemini 400: {body[:300]}")
             if response.status >= 500:
                 self._mark_failure(slot, 60, f"{response.status} server")
                 raise RuntimeError(f"gemini {response.status}")
@@ -447,8 +421,7 @@ class AIConnector:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        clean_url = base_url.rstrip("/")
-        endpoint = f"{clean_url}/chat/completions"
+        endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
         async with session.post(
             endpoint,
@@ -473,9 +446,9 @@ class AIConnector:
             if response.status in (401, 403):
                 self._mark_failure(slot, 300, f"{response.status} auth")
                 raise RuntimeError(f"{provider} {response.status}")
-            if response.status == 402:
-                self._mark_failure(slot, 3600, "402 pago")
-                raise RuntimeError(f"{provider} 402")
+            if response.status == 413:
+                self._mark_failure(slot, 60, "413 payload too large")
+                raise RuntimeError(f"{provider} 413")
             if response.status == 404:
                 self._mark_failure(slot, 120, "404 modelo")
                 raise RuntimeError(f"{provider} 404")
@@ -487,7 +460,7 @@ class AIConnector:
             raise RuntimeError(f"{provider} {response.status}: {body[:200]}")
 
     # ============================================================
-    # COMPLETE (dispatch por proveedor)
+    # COMPLETE
     # ============================================================
 
     async def complete(
