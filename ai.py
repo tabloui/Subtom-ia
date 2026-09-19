@@ -134,12 +134,40 @@ class Agent:
         return content
 
     def _select_model(self, prompt: str, task: TaskType, force_image: bool = False) -> list[str]:
-        return [config.ai_model]
+        """Devuelve TODOS los modelos configurados en los slots, en orden.
+        Así si Gemini falla, se prueba Groq, y viceversa."""
+        modelos = []
+        for slot in config.ai_slots:
+            if slot.model and slot.model not in modelos:
+                modelos.append(slot.model)
+        return modelos or [config.ai_model]
+
+    def _extract_tool_calls(self, message: dict) -> list[dict]:
+        """Normaliza la respuesta del modelo: acepta formato OpenAI (tool_calls)
+        y formato Gemini (functionCall dentro de parts)."""
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            return tool_calls
+
+        # Fallback: por si el connector no tradujo y viene functionCall crudo
+        parts = message.get("parts") or []
+        converted = []
+        for p in parts:
+            fc = p.get("functionCall")
+            if fc:
+                converted.append({
+                    "id": f"call_{hashlib.blake2b(json.dumps(fc, sort_keys=True).encode(), digest_size=8).hexdigest()}",
+                    "type": "function",
+                    "function": {
+                        "name": fc.get("name", ""),
+                        "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False),
+                    },
+                })
+        return converted
 
     # ================================================================
-    # TOOL SCHEMAS
+    # TOOL SCHEMAS (sin cambios)
     # ================================================================
-
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
             # ============ WEB ============
@@ -247,14 +275,8 @@ class Agent:
             # ============ GITHUB ============
             {"type": "function", "function": {
                 "name": "github_search_code",
-                "description": (
-                    "PASO 1 OBLIGATORIO. Busca archivos o código en GitHub. "
-                    "Úsalo SIEMPRE antes de github_read cuando no estés 100% seguro de la ruta. "
-                    "Ejemplos de query: 'filename:ai.py repo:tabloui/subtom-ia' o 'class Agent repo:tabloui/subtom-ia'."
-                ),
-                "parameters": {"type": "object", "properties": {
-                    "query": {"type": "string"},
-                }, "required": ["query"]},
+                "description": "PASO 1 OBLIGATORIO: busca archivos o código en GitHub antes de github_read. Query tipo 'filename:ai.py repo:tabloui/subtom-ia'.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
             }},
             {"type": "function", "function": {
                 "name": "github_list",
@@ -263,10 +285,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_tree",
-                "description": (
-                    "Lista recursivamente los archivos de un repo o carpeta. "
-                    "Úsalo para ver la estructura real del repo antes de leer o escribir archivos."
-                ),
+                "description": "Lista recursivamente los archivos de un repo o carpeta.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "path": {"type": "string", "default": ""},
@@ -275,11 +294,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_read",
-                "description": (
-                    "Lee un archivo de un repositorio. La ruta debe ser exacta. "
-                    "Si no estás seguro de la ruta, usa github_search_code o github_tree ANTES. "
-                    "Si el archivo no existe en la ruta indicada, prueba automáticamente en la raíz."
-                ),
+                "description": "Lee un archivo de un repositorio. La ruta debe ser exacta. Si no estás seguro, usa github_search_code o github_tree ANTES.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "path": {"type": "string"},
@@ -288,11 +303,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_write",
-                "description": (
-                    "Crea o actualiza un archivo en GitHub. ANTES de usarlo, DEBES hacer: "
-                    "1) github_search_code o github_tree para localizar el archivo; "
-                    "2) github_read para leer su contenido actual. Nunca escribas a ciegas."
-                ),
+                "description": "Crea o actualiza un archivo en GitHub. ANTES: 1) github_search_code o github_tree; 2) github_read. Nunca escribas a ciegas.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "path": {"type": "string"},
@@ -591,9 +602,8 @@ class Agent:
         ]
 
     # ================================================================
-    # RUN TOOL
+    # RUN TOOL (sin cambios)
     # ================================================================
-
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
             # WEB
@@ -826,20 +836,14 @@ class Agent:
     # ================================================================
 
     async def github_read_with_fallback(self, args: dict[str, Any]) -> dict[str, Any]:
-        """
-        Lee un archivo de GitHub. Si falla con la ruta indicada,
-        intenta automáticamente con la ruta sin prefijo (ej: src/ai.py -> ai.py).
-        """
         repo = args["repo"].strip("/")
         path = args["path"].lstrip("/")
         ref = args.get("ref", "main")
 
-        # Intento 1: ruta tal cual
         result = await self.github_request("GET", f"/repos/{repo}/contents/{path}?ref={ref}")
         if not (isinstance(result, dict) and result.get("error")):
             return result
 
-        # Intento 2: si empieza por src/ o similar, prueba sin el prefijo
         if "/" in path:
             alt_path = path.split("/", 1)[1]
             print(f"[GITHUB] {path} no existe, probando {alt_path}...")
@@ -848,7 +852,6 @@ class Agent:
                 alt_result["_note"] = f"Ruta original '{path}' no existía, se usó '{alt_path}'."
                 return alt_result
 
-        # Intento 3: prueba en la raíz con el nombre del archivo
         base_name = path.split("/")[-1]
         if base_name != path:
             root_result = await self.github_request("GET", f"/repos/{repo}/contents/{base_name}?ref={ref}")
@@ -1123,6 +1126,9 @@ class Agent:
             print(f"[FLUX] Error descargando imagen: {exc}")
             return None
 
+    # ================================================================
+    # ASK (con soporte multi-proveedor y tool_calls normalizados)
+    # ================================================================
     async def ask(
         self,
         user_id: int,
@@ -1179,7 +1185,8 @@ class Agent:
                         raise RuntimeError("La IA no devolvió ninguna elección.")
 
                     message = choices[0].get("message") or {}
-                    tool_calls = message.get("tool_calls") or []
+                    # Normaliza tool_calls (acepta formato OpenAI y formato Gemini crudo)
+                    tool_calls = self._extract_tool_calls(message)
 
                     assistant_message: dict[str, Any] = {"role": "assistant", "content": message.get("content")}
                     if tool_calls:
@@ -1239,7 +1246,7 @@ class Agent:
                             raise RuntimeError(f"Estancamiento en '{name}'.")
                         result_history.append(result_hash)
 
-                        messages.append({"role": "tool", "tool_call_id": call.get("id") or "", "content": result_sig})
+                        messages.append({"role": "tool", "tool_call_id": call.get("id") or "", "name": name, "content": result_sig})
                         print(f"[MOTOR] Ronda {rounds_used}: tool '{name}' ({int(elapsed)}s)")
 
             except Exception as exc:
