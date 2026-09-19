@@ -1250,4 +1250,15 @@ class Agent:
                 if "bucle" in err_txt or "estancamiento" in err_txt:
                     print(f"[MOTOR] Cortado: {exc}")
                     break
-                if "image" in err_txt or "vision" in err_txt or "multimodal" in err
+                if "image" in err_txt or "vision" in err_txt or "multimodal" in err_txt or "modality" in err_txt:
+                    print(f"[VISION] '{modelo_actual}' rechazó imagen. Siguiente.")
+                elif "404" in err_txt or "unavailable" in err_txt:
+                    print(f"[MODEL-GONE] '{modelo_actual}' ya no existe.")
+                else:
+                    print(f"[FALLBACK] '{modelo_actual}' falló: {type(exc).__name__}: {str(exc)[:200]}")
+                continue
+
+        raise RuntimeError(f"Todos los modelos fallaron. Último error: {last_error}")
+
+
+agent = Agent()
