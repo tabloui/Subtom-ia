@@ -17,15 +17,27 @@ from config import config, AISlot
 def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if forced:
         forced_map = {
+            "ollama": ("ollama", "https://ollama.com/v1"),
+            "aimlapi": ("aimlapi", "https://api.aimlapi.com/v1"),
+            "together": ("together", "https://api.together.xyz/v1"),
+            "deepinfra": ("deepinfra", "https://api.deepinfra.com/v1/openai"),
+            "local": ("local", os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
+            "termux": ("termux", os.getenv("AI_API_BASE_URL_1") or os.getenv("AI_LOCAL_URL", "http://127.0.0.1:8080/v1")),
+            "freegpt4": ("freegpt4", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:5500")),
+            "puter": ("puter", os.getenv("AI_API_BASE_URL_1", "http://127.0.0.1:8741/v1")),
+            "keylessai": ("keylessai", os.getenv("AI_API_BASE_URL_1", "https://keylessai.thryx.workers.dev/v1")),
+            "omniroute": ("omniroute", os.getenv("AI_API_BASE_URL_1", "http://cloud.omniroute.online/v1")),
+            "danyapi": ("danyapi", "https://danyapi.cloudpub.ru/v1/"),
             "gemini": ("gemini", os.getenv("AI_API_BASE_URL_1") or "https://generativelanguage.googleapis.com/v1beta"),
             "groq": ("groq", "https://api.groq.com/openai/v1"),
-            "openai": ("openai", "https://api.openai.com/v1"),
             "openrouter": ("openrouter", "https://openrouter.ai/api/v1"),
-            "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
+            "openai": ("openai", "https://api.openai.com/v1"),
             "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1"),
+            "cerebras": ("cerebras", "https://api.cerebras.ai/v1"),
             "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
             "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
             "xai": ("xai", "https://api.x.ai/v1"),
+            "bytez": ("bytez", "https://api.bytez.com/models/v2/openai/v1"),
         }
         if forced.lower() in forced_map:
             return forced_map[forced.lower()]
@@ -39,6 +51,20 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
         if url.rstrip("/").endswith("/openai"):
             url = url.rstrip("/")[:-7]
         return "gemini", url
+
+    # === OmniRoute / KeylessAI / Puter / FreeGPT4 ===
+    if "omniroute" in url_env or "omnirouter" in url_env:
+        return "omniroute", url_env
+    if key == "not-needed" or "keylessai" in url_env:
+        return "keylessai", url_env or "https://keylessai.thryx.workers.dev/v1"
+    if key == "subtom123" or ":8741" in url_env:
+        return "puter", url_env or "http://127.0.0.1:8741/v1"
+    if key == "dummy" or ("trycloudflare.com" in url_env and ":5500" in url_env):
+        return "freegpt4", url_env or "http://127.0.0.1:5500"
+    if "cloudpub.ru" in url_env:
+        return "danyapi", "https://danyapi.cloudpub.ru/v1/"
+    if key.startswith("sk-subtom-"):
+        return "termux", url_env or "http://127.0.0.1:8080/v1"
 
     # === Groq ===
     if key.startswith("gsk_"):
@@ -64,6 +90,9 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
 
     if len(key) == 36 and key.count("-") == 4:
         return "sambanova", "https://api.sambanova.ai/v1"
+
+    if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
+        return "bytez", "https://api.bytez.com/models/v2/openai/v1"
 
     if url_env:
         return "openai", url_env
@@ -157,10 +186,12 @@ class AIConnector:
             "Eres Subtom IA, el asistente personal de Amin. Hablas siempre en español y eres "
             "súper amable, cálido y cercano, como un buen amigo que sabe programar. Te gusta "
             "conversar: das contexto, explicas con detalle, y tus respuestas son largas y "
-            "completas, nunca de una línea seca.\n\n"
+            "completas, nunca de una línea seca. Usas un tono natural, con humor seco cuando "
+            "encaja, sin exagerar con emojis. Eres técnico cuando hace falta pero sin ser "
+            "pedante.\n\n"
             "FORMATO DE RESPUESTA: Separa tus ideas en párrafos cortos con líneas en blanco "
             "entre ellos. Usa listas con guiones cuando enumeres cosas. Pon el código en "
-            "bloques con ```.\n\n"
+            "bloques con ```. No metas todo en un solo bloque de texto.\n\n"
             "Tienes herramientas reales. Úsalas cuando toca. Si no estás seguro de la ruta "
             "de un archivo en GitHub, usa github_search_code o github_tree ANTES de "
             "github_read. Nunca inventes contenido: si una herramienta falla, dilo.\n\n"
@@ -205,7 +236,7 @@ class AIConnector:
             self._last_used = slot.index
 
     # ============================================================
-    # GEMINI NATIVO (con fix del error 400 / thought signatures)
+    # GEMINI NATIVO (con FIX error 400 / thought signatures)
     # ============================================================
 
     @staticmethod
@@ -270,7 +301,7 @@ class AIConnector:
                             "args": args_dict,
                         }
                     }
-                    # FIX error 400: thought_signature obligatoria en la primera tool_call
+                    # FIX ERROR 400: thought_signature obligatoria en la primera tool_call
                     if idx == 0:
                         part["thoughtSignature"] = "skip_thought_signature_validator"
                     parts.append(part)
@@ -379,12 +410,12 @@ class AIConnector:
             if response.status in (401, 403):
                 self._mark_failure(slot, 300, f"{response.status} auth")
                 raise RuntimeError(f"gemini {response.status}")
+            if response.status == 400:
+                self._mark_failure(slot, 30, "400 payload/thought_signature")
+                raise RuntimeError(f"gemini 400: {body[:300]}")
             if response.status == 404:
                 self._mark_failure(slot, 120, "404 modelo")
                 raise RuntimeError("gemini 404")
-            if response.status == 400:
-                self._mark_failure(slot, 30, "400 payload")
-                raise RuntimeError(f"gemini 400: {body[:300]}")
             if response.status >= 500:
                 self._mark_failure(slot, 60, f"{response.status} server")
                 raise RuntimeError(f"gemini {response.status}")
@@ -393,7 +424,7 @@ class AIConnector:
             raise RuntimeError(f"gemini {response.status}: {body[:300]}")
 
     # ============================================================
-    # OPENAI-COMPATIBLE (Groq, OpenAI, etc.)
+    # OPENAI-COMPATIBLE
     # ============================================================
 
     async def _call_openai_compat(
