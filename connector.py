@@ -215,7 +215,7 @@ class AIConnector:
             self._last_used = slot.index
 
     # ============================================================
-    # GEMINI NATIVO (con FIX error 400 / thought signatures)
+    # GEMINI NATIVO (con FIX error 400 + captura de finish_reason)
     # ============================================================
 
     @staticmethod
@@ -309,9 +309,13 @@ class AIConnector:
     def _gemini_response_to_openai(data: dict, model: str) -> dict:
         text = ""
         tool_calls = []
+        finish_reason = "stop"
+
         candidates = data.get("candidates", [])
         if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
+            candidate = candidates[0]
+            finish_reason = str(candidate.get("finishReason", "stop")).lower()
+            parts = candidate.get("content", {}).get("parts", [])
             for p in parts:
                 if "text" in p:
                     text += p["text"]
@@ -326,6 +330,17 @@ class AIConnector:
                         },
                     })
 
+        # FIX: si Gemini devolvió respuesta vacía, incluir el motivo como texto
+        if not text and not tool_calls:
+            if finish_reason in ("safety", "recitation", "blocked", "prohibited_content"):
+                text = f"⚠️ Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish_reason})."
+            elif finish_reason == "max_tokens":
+                text = "⚠️ La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
+            elif finish_reason == "other":
+                text = "⚠️ Gemini devolvió un error genérico. Prueba otra vez."
+            else:
+                text = f"⚠️ Gemini devolvió una respuesta vacía (finish_reason: {finish_reason})."
+
         message: dict[str, Any] = {"role": "assistant", "content": text or None}
         if tool_calls:
             message["tool_calls"] = tool_calls
@@ -338,7 +353,7 @@ class AIConnector:
             "choices": [{
                 "index": 0,
                 "message": message,
-                "finish_reason": "tool_calls" if tool_calls else "stop",
+                "finish_reason": "tool_calls" if tool_calls else finish_reason,
             }],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
