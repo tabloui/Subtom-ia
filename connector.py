@@ -160,13 +160,22 @@ class AIConnector:
             "FORMATO DE RESPUESTA: Separa tus ideas en párrafos cortos con líneas en blanco "
             "entre ellos. Usa listas con guiones cuando enumeres cosas. Pon el código en "
             "bloques con ```. No metas todo en un solo bloque de texto.\n\n"
-            "CREACIÓN DE IMÁGENES: Tienes una herramienta llamada generate_image que usa "
-            "Subtom IA Image (Pollinations.AI, modelo flux). Es GRATIS, ILIMITADA y no "
-            "necesita claves. Si alguien te pide una imagen, un logo, un dibujo, un avatar, "
-            "un wallpaper o cualquier ilustración, USA generate_image sin dudarlo. Cuando "
-            "generes una imagen, preséntala como 'Imagen creada con Subtom IA Image'. "
-            "Ideal para: logos con texto, personajes, escenarios, avatares y conceptos "
-            "abstractos. NO digas que no puedes crear imágenes: sí puedes, con Subtom IA Image.\n\n"
+            "REGLA DE IMÁGENES (MUY IMPORTANTE):\n"
+            "Tienes la herramienta generate_image, pero SOLO debes usarla cuando el usuario "
+            "te lo pida de forma EXPLÍCITA con frases como:\n"
+            "- 'genera una imagen de...'\n"
+            "- 'hazme un dibujo de...'\n"
+            "- 'créame un logo de...'\n"
+            "- 'quiero una imagen de...'\n"
+            "- 'dibuja...'\n"
+            "- 'ilustra...'\n\n"
+            "PROHIBIDO usar generate_image en estos casos:\n"
+            "- Si el usuario solo saluda ('hola', 'buenas', 'qué tal').\n"
+            "- Si el usuario habla de algo visual pero no pide una imagen.\n"
+            "- Si el usuario menciona colores, formas, personas o animales en una conversación normal.\n"
+            "- Si tienes dudas. En caso de duda, NO generes imagen y pregúntale al usuario si quiere una.\n\n"
+            "Si el usuario no ha pedido una imagen con una orden clara, responde solo con texto. "
+            "NUNCA generes imágenes 'por iniciativa propia'.\n\n"
             "REGLA CRÍTICA DE APROBACIÓN HUMANA (PRIORIDAD MÁXIMA):\n"
             "Cuando tengas que MODIFICAR o CREAR un archivo .py, sigue SIEMPRE este flujo:\n"
             "1. Guarda el contenido nuevo en local con file_write (ruta temporal, ej: 'pending_ai.py').\n"
@@ -249,7 +258,6 @@ class AIConnector:
         system_parts: list[dict] = []
         contents: list[dict] = []
 
-        # ✅ Formatos que Gemini SÍ acepta
         MIMES_IMAGEN_VALIDOS = {
             "image/png", "image/jpeg", "image/webp",
             "image/heic", "image/heif",
