@@ -416,6 +416,17 @@ class Agent:
                 "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "private": {"type": "boolean", "default": False}}, "required": ["name"]},
             }},
             {"type": "function", "function": {
+                "name": "github_delete_repo",
+                "description": (
+                    "ELIMINA un repositorio completo de GitHub. ⚠️ ACCIÓN IRREVERSIBLE. "
+                    "Solo usar cuando el usuario lo pida EXPLÍCITAMENTE con frases como "
+                    "'borra el repo X', 'elimina mi repositorio Y'. Nunca por iniciativa propia."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "repo": {"type": "string", "description": "Formato: usuario/repositorio"},
+                }, "required": ["repo"]},
+            }},
+            {"type": "function", "function": {
                 "name": "github_upload_project",
                 "description": "Sube uno o varios archivos a GitHub usando la Git Data API. Parámetro 'files': diccionario {ruta_en_repo: ruta_local}.",
                 "parameters": {"type": "object", "properties": {
@@ -507,9 +518,12 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "generate_image",
-                "description": "Genera una imagen con Subtom IA Image (Pollinations.AI). La imagen se envía automáticamente al chat.",
+                "description": (
+                    "SOLO usar cuando el usuario pida EXPLÍCITAMENTE una imagen, dibujo, logo o ilustración. "
+                    "NO usar en conversación normal. Si el usuario no ha pedido una imagen, NO llames a esta herramienta."
+                ),
                 "parameters": {"type": "object", "properties": {
-                    "prompt": {"type": "string"},
+                    "prompt": {"type": "string", "description": "Descripción detallada de la imagen a generar"},
                 }, "required": ["prompt"]},
             }},
             {"type": "function", "function": {
@@ -789,6 +803,8 @@ class Agent:
                 return await self.github_write(args)
             if name == "github_create_repo":
                 return await self.github_create_repo(args)
+            if name == "github_delete_repo":
+                return await self.github_delete_repo(args)
             if name == "github_upload_project":
                 return await self.github_upload_project(args)
             if name == "github_create_issue":
@@ -1135,6 +1151,15 @@ class Agent:
                 if resp.status >= 400:
                     return {"error": f"HTTP {resp.status}", "detail": data}
                 return {"name": data.get("full_name"), "url": data.get("html_url")}
+
+    async def github_delete_repo(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not config.github_token:
+            return {"error": "GITHUB_TOKEN no configurado."}
+        repo = args["repo"].strip("/")
+        result = await self.github_request("DELETE", f"/repos/{repo}")
+        if isinstance(result, dict) and result.get("error"):
+            return result
+        return {"ok": True, "deleted": repo}
 
     async def github_upload_project(self, args: dict[str, Any]) -> dict[str, Any]:
         if not config.github_token:
