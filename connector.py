@@ -249,6 +249,16 @@ class AIConnector:
         system_parts: list[dict] = []
         contents: list[dict] = []
 
+        # ✅ Formatos que Gemini SÍ acepta
+        MIMES_IMAGEN_VALIDOS = {
+            "image/png", "image/jpeg", "image/webp",
+            "image/heic", "image/heif",
+        }
+        MIMES_AUDIO_VALIDOS = {
+            "audio/wav", "audio/mp3", "audio/mpeg",
+            "audio/aiff", "audio/aac", "audio/ogg", "audio/flac",
+        }
+
         for m in messages:
             role = m.get("role")
             content = m.get("content")
@@ -308,8 +318,11 @@ class AIConnector:
                         url = block["image_url"]["url"]
                         if url.startswith("data:"):
                             header, b64 = url.split(",", 1)
-                            mime = header.split(":")[1].split(";")[0]
-                            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+                            mime = header.split(":")[1].split(";")[0].lower()
+                            if mime in MIMES_IMAGEN_VALIDOS or mime in MIMES_AUDIO_VALIDOS:
+                                parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+                            else:
+                                parts.append({"text": f"[Archivo con formato no soportado por Gemini: {mime}]"})
                 contents.append({"role": g_role, "parts": parts})
             else:
                 contents.append({"role": g_role, "parts": [{"text": content or ""}]})
