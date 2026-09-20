@@ -17,9 +17,10 @@ from file_tools import FileTools
 from motor import motor, TaskType, PromptLang
 
 
+# ✅ SOLO formatos que Gemini acepta de verdad
 IMAGE_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp",
-    ".bmp", ".tiff", ".tif", ".ico",
+    ".png", ".jpg", ".jpeg", ".webp",
+    ".heic", ".heif",
 }
 
 REPO_PRINCIPAL = "tabloui/subtom-ia"
@@ -165,7 +166,6 @@ class Agent:
     # EXTRACCIÓN DE BLOQUES DE CÓDIGO (OPCIÓN 3)
     # ================================================================
 
-    # Regex: detecta "FILE: nombre.ext" seguido de un bloque ```lang ... ```
     _FILE_BLOCK_RE = re.compile(
         r"FILE:\s*([^\n`]+?)\s*\n"
         r"```[a-zA-Z0-9_+\-]*[ \t]*\n"
@@ -189,11 +189,6 @@ class Agent:
         return blocks
 
     async def _process_file_blocks(self, text: str) -> list[str]:
-        """
-        Extrae bloques FILE: del texto, los guarda en el workspace,
-        y los sube a GitHub con github_upload_project.
-        Devuelve la lista de archivos subidos.
-        """
         blocks = self._extract_file_blocks(text)
         if not blocks:
             return []
@@ -1278,19 +1273,12 @@ class Agent:
     # ================================================================
 
     async def generate_image(self, prompt: str, _retry: int = 0) -> dict[str, Any]:
-        """
-        Genera una imagen con Pollinations.AI.
-        - Reintenta hasta 3 veces.
-        - Prueba modelos alternativos si el principal falla (500, 502, timeout).
-        - Devuelve _send_file para que el bot la envíe al chat.
-        """
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
         prompt = prompt.strip()
 
         prompt_encoded = aiohttp.helpers.quote(prompt, safe="")
 
-        # Elegir modelo según el intento (rota si falla)
         model = POLLINATIONS_MODELS[_retry % len(POLLINATIONS_MODELS)]
 
         url = (
@@ -1448,7 +1436,6 @@ class Agent:
                             else:
                                 answer = f"⚠️ No he recibido respuesta del modelo (finish_reason: {finish_reason})."
 
-                        # OPCIÓN 3: extraer bloques FILE: y subirlos a GitHub
                         if answer:
                             subidos = await self._process_file_blocks(answer)
                             if subidos:
