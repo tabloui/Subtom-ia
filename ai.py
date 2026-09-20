@@ -17,17 +17,19 @@ from file_tools import FileTools
 from motor import motor, TaskType, PromptLang
 
 
-# ✅ SOLO formatos que Gemini acepta de verdad
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".webp",
     ".heic", ".heif",
+}
+
+AUDIO_EXTENSIONS = {
+    ".mp3", ".ogg", ".wav", ".m4a", ".aac", ".flac",
 }
 
 REPO_PRINCIPAL = "tabloui/subtom-ia"
 
 MAX_LINES_PER_TOOL_CALL = 50
 
-# Modelos de Pollinations en orden de preferencia (si uno falla, prueba el siguiente)
 POLLINATIONS_MODELS = ["flux", "turbo", "flux-realism", "flux-anime"]
 
 
@@ -105,14 +107,14 @@ class Agent:
         )
         return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
-    def _extract_image_paths(self, prompt: str) -> list[str]:
+    def _extract_media_paths(self, prompt: str) -> list[str]:
         paths: list[str] = []
         for m in re.finditer(r"->\s*ruta local:\s*(\S+)", prompt):
             raw = m.group(1).strip().strip('",')
             try:
                 p = Path(raw)
-                if (p.suffix.lower() in IMAGE_EXTENSIONS
-                        and p.exists() and p.is_file()):
+                ext = p.suffix.lower()
+                if (ext in IMAGE_EXTENSIONS or ext in AUDIO_EXTENSIONS) and p.exists() and p.is_file():
                     paths.append(str(p))
             except Exception:
                 continue
@@ -123,15 +125,55 @@ class Agent:
                 unique.append(p)
         return unique
 
-    def _build_multimodal_content(self, prompt: str, image_paths: list[str]) -> list[dict[str, Any]]:
+    def _file_to_data_url(self, path: str) -> str:
+        ext = Path(path).suffix.lower()
+        mime = "application/octet-stream"
+        if ext in (".mp3", ".mpeg"):
+            mime = "audio/mp3"
+        elif ext == ".ogg":
+            mime = "audio/ogg"
+        elif ext == ".wav":
+            mime = "audio/wav"
+        elif ext == ".m4a":
+            mime = "audio/mp4"
+        elif ext == ".aac":
+            mime = "audio/aac"
+        elif ext == ".flac":
+            mime = "audio/flac"
+        elif ext == ".png":
+            mime = "image/png"
+        elif ext in (".jpg", ".jpeg"):
+            mime = "image/jpeg"
+        elif ext == ".webp":
+            mime = "image/webp"
+        elif ext == ".heic":
+            mime = "image/heic"
+        elif ext == ".heif":
+            mime = "image/heif"
+
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+
+    def _build_multimodal_content(self, prompt: str, media_paths: list[str]) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-        for path in image_paths:
+        for path in media_paths:
             try:
-                info = self.files.read_image_base64(path)
-                if info["size"] > 20 * 1024 * 1024:
-                    content.append({"type": "text", "text": f"[Imagen >20MB omitida: {info['filename']}]"})
-                    continue
-                content.append({"type": "image_url", "image_url": {"url": info["data_url"]}})
+                ext = Path(path).suffix.lower()
+                if ext in IMAGE_EXTENSIONS:
+                    if Path(path).stat().st_size > 20 * 1024 * 1024:
+                        content.append({"type": "text", "text": f"[Imagen >20MB omitida: {Path(path).name}]"})
+                        continue
+                    data_url = self._file_to_data_url(path)
+                    content.append({"type": "image_url", "image_url": {"url": data_url}})
+                elif ext in AUDIO_EXTENSIONS:
+                    if Path(path).stat().st_size > 20 * 1024 * 1024:
+                        content.append({"type": "text", "text": f"[Audio >20MB omitido: {Path(path).name}]"})
+                        continue
+                    data_url = self._file_to_data_url(path)
+                    content.append({"type": "image_url", "image_url": {"url": data_url}})
+                else:
+                    content.append({"type": "text", "text": f"[Archivo no soportado: {path}]"})
             except Exception as exc:
                 content.append({"type": "text", "text": f"[No se pudo cargar {path}: {exc}]"})
         return content
@@ -162,10 +204,6 @@ class Agent:
                 })
         return converted
 
-    # ================================================================
-    # EXTRACCIÓN DE BLOQUES DE CÓDIGO (OPCIÓN 3)
-    # ================================================================
-
     _FILE_BLOCK_RE = re.compile(
         r"FILE:\s*([^\n`]+?)\s*\n"
         r"```[a-zA-Z0-9_+\-]*[ \t]*\n"
@@ -193,8 +231,7 @@ class Agent:
         if not blocks:
             return []
 
-        uploaded_files: list[str] = []
-        files_map: dict[str, str] = {}
+        saved_files: list[str] = []
 
         for block in blocks:
             filename = block["filename"]
@@ -205,39 +242,19 @@ class Agent:
             try:
                 self.files.write_file(pending_name, content)
                 print(f"[FILE_BLOCK] Guardado {pending_name} ({len(content)} chars)")
+                saved_files.append(pending_name)
             except Exception as exc:
                 print(f"[FILE_BLOCK] Error guardando {pending_name}: {exc}")
                 continue
 
-            files_map[filename] = pending_name
-            uploaded_files.append(filename)
+        if saved_files:
+            print(f"[FILE_BLOCK] {len(saved_files)} archivos guardados en local (pendientes de aprobación).")
+            return saved_files
 
-        if not files_map:
-            return []
+        return []
 
-        try:
-            result = await self.github_upload_project({
-                "repo": REPO_PRINCIPAL,
-                "files": files_map,
-                "message": f"Update {', '.join(uploaded_files)}",
-                "branch": "main",
-            })
-            if isinstance(result, dict) and result.get("error"):
-                print(f"[FILE_BLOCK] Error subiendo: {result['error']}")
-                return []
-            print(f"[FILE_BLOCK] Subidos {len(uploaded_files)} archivos: {uploaded_files}")
-        except Exception as exc:
-            print(f"[FILE_BLOCK] Excepción subiendo: {exc}")
-            return []
-
-        return uploaded_files
-
-    # ================================================================
-    # TOOL SCHEMAS
-    # ================================================================
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
-            # WEB
             {"type": "function", "function": {
                 "name": "web_search",
                 "description": "Busca en internet con DuckDuckGo.",
@@ -254,8 +271,6 @@ class Agent:
                     "max_chars": {"type": "integer", "default": 8000},
                 }, "required": ["url"]},
             }},
-
-            # ARCHIVOS
             {"type": "function", "function": {
                 "name": "file_list",
                 "description": "Lista archivos y carpetas del workspace.",
@@ -274,7 +289,7 @@ class Agent:
                     "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 50 líneas por llamada. "
                     "Para archivos grandes, escribe el código en tu RESPUESTA DE TEXTO con el formato:\n"
                     "FILE: nombre.ext\n```lenguaje\n...contenido...\n```\n"
-                    "y el sistema lo extraerá y subirá automáticamente."
+                    "y el sistema lo extraerá y guardará automáticamente."
                 ),
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
@@ -343,8 +358,6 @@ class Agent:
                 "description": "Reemplaza texto en todos los archivos de una carpeta.",
                 "parameters": {"type": "object", "properties": {"directory": {"type": "string", "default": "."}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["old", "new"]},
             }},
-
-            # GITHUB
             {"type": "function", "function": {
                 "name": "github_search_code",
                 "description": "Busca archivos o código en GitHub antes de github_read.",
@@ -387,7 +400,7 @@ class Agent:
                 "description": (
                     "Escribe un archivo en GitHub. LÍMITE DURO: máximo 50 líneas en 'content'. "
                     "Para archivos grandes, USA EL FORMATO 'FILE: nombre.ext' + bloque ``` en tu "
-                    "respuesta de texto. El sistema lo extraerá y subirá automáticamente."
+                    "respuesta de texto. El sistema lo extraerá y guardará automáticamente."
                 ),
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
@@ -404,10 +417,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "github_upload_project",
-                "description": (
-                    "Sube uno o varios archivos a GitHub usando la Git Data API. "
-                    "Parámetro 'files': diccionario {ruta_en_repo: ruta_local}."
-                ),
+                "description": "Sube uno o varios archivos a GitHub usando la Git Data API. Parámetro 'files': diccionario {ruta_en_repo: ruta_local}.",
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
                     "files": {"type": "object"},
@@ -475,8 +485,6 @@ class Agent:
                 "description": "Hace fork de un repositorio.",
                 "parameters": {"type": "object", "properties": {"repo": {"type": "string"}}, "required": ["repo"]},
             }},
-
-            # VERCEL
             {"type": "function", "function": {
                 "name": "vercel_projects",
                 "description": "Lista tus proyectos de Vercel.",
@@ -497,8 +505,6 @@ class Agent:
                 "description": "Fuerza un nuevo deployment.",
                 "parameters": {"type": "object", "properties": {"project": {"type": "string"}, "target": {"type": "string", "default": "production"}}, "required": ["project"]},
             }},
-
-            # IMAGEN
             {"type": "function", "function": {
                 "name": "generate_image",
                 "description": "Genera una imagen con Subtom IA Image (Pollinations.AI). La imagen se envía automáticamente al chat.",
@@ -506,8 +512,6 @@ class Agent:
                     "prompt": {"type": "string"},
                 }, "required": ["prompt"]},
             }},
-
-            # SANDBOX
             {"type": "function", "function": {
                 "name": "sandbox_run_python",
                 "description": "Ejecuta código Python en sandbox.",
@@ -578,8 +582,6 @@ class Agent:
                 "description": "Verifica un cambio en un archivo Python antes de subirlo.",
                 "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_content": {"type": "string"}, "new_content": {"type": "string"}}, "required": ["file_path", "old_content", "new_content"]},
             }},
-
-            # DISCORD
             {"type": "function", "function": {
                 "name": "discord_send_message",
                 "description": "Envía un mensaje a un canal.",
@@ -687,12 +689,8 @@ class Agent:
             }},
         ]
 
-    # ================================================================
-    # RUN TOOL
-    # ================================================================
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
-            # GUARD
             if name in ("file_write", "file_append", "github_write"):
                 content = args.get("content", "")
                 if isinstance(content, str):
@@ -704,17 +702,15 @@ class Agent:
                             "instruction": (
                                 f"El bloque tiene {line_count} líneas y el máximo es {MAX_LINES_PER_TOOL_CALL}. "
                                 "USA EL FORMATO 'FILE: nombre.ext' + bloque ``` en tu respuesta de texto. "
-                                "El sistema lo extraerá y lo subirá automáticamente sin límites."
+                                "El sistema lo extraerá y guardará automáticamente sin límites."
                             ),
                         }
 
-            # WEB
             if name == "web_search":
                 return await self._cached_search(args)
             if name == "web_fetch":
                 return await self._cached_fetch(args)
 
-            # ARCHIVOS
             if name == "file_list":
                 return {"files": self.files.list_files(args.get("path", "."))}
             if name == "file_read":
@@ -767,7 +763,6 @@ class Agent:
             if name == "file_search_and_replace_dir":
                 return self.files.search_and_replace_dir(args.get("directory", "."), args["old"], args["new"])
 
-            # GITHUB
             if name == "github_search_code":
                 return await self.github_request("GET", f"/search/code?q={args['query']}")
             if name == "github_list":
@@ -821,7 +816,6 @@ class Agent:
             if name == "github_fork_repo":
                 return await self.github_request("POST", f"/repos/{args['repo'].strip('/')}/forks")
 
-            # VERCEL
             if name == "vercel_projects":
                 return await self.vercel_request("GET", "/v9/projects?limit=100")
             if name == "vercel_deployments":
@@ -832,11 +826,9 @@ class Agent:
             if name == "vercel_redeploy":
                 return await self.vercel_redeploy(args)
 
-            # IMAGEN
             if name == "generate_image":
                 return await self.generate_image(args["prompt"])
 
-            # SANDBOX
             if name == "sandbox_run_python":
                 from sandbox import sandbox
                 return await sandbox.run_python(args["code"])
@@ -880,7 +872,6 @@ class Agent:
                 from sandbox import sandbox
                 return await sandbox.verify_python_change(args["file_path"], args["old_content"], args["new_content"])
 
-            # DISCORD
             if name == "discord_send_message":
                 import discord_tools
                 return await discord_tools.send_message(args["channel_id"], args.get("content", ""), args.get("embed"))
@@ -974,10 +965,6 @@ class Agent:
 
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {str(exc)[:2000]}"}
-
-    # ================================================================
-    # GITHUB HELPERS
-    # ================================================================
 
     async def github_read_with_fallback(self, args: dict[str, Any]) -> dict[str, Any]:
         repo = args["repo"].strip("/")
@@ -1268,10 +1255,6 @@ class Agent:
                     return {"error": f"HTTP {resp.status}", "detail": data}
                 return {"id": data.get("id"), "url": data.get("url"), "status": data.get("status")}
 
-    # ================================================================
-    # GENERACIÓN DE IMÁGENES — POLLINATIONS.AI con reintentos
-    # ================================================================
-
     async def generate_image(self, prompt: str, _retry: int = 0) -> dict[str, Any]:
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
@@ -1337,9 +1320,6 @@ class Agent:
                 return await self.generate_image(prompt, _retry + 1)
             return {"error": f"{type(exc).__name__}: {exc}"}
 
-    # ================================================================
-    # ASK
-    # ================================================================
     async def ask(
         self,
         user_id: int,
@@ -1357,9 +1337,9 @@ class Agent:
 
         messages = await self.history(user_id, channel_id)
 
-        image_paths = self._extract_image_paths(prompt)
-        if image_paths and messages:
-            multimodal = self._build_multimodal_content(prompt, image_paths)
+        media_paths = self._extract_media_paths(prompt)
+        if media_paths and messages:
+            multimodal = self._build_multimodal_content(prompt, media_paths)
             if messages[-1].get("role") == "user":
                 messages[-1] = {"role": "user", "content": multimodal}
 
@@ -1415,7 +1395,7 @@ class Agent:
                                     "⚠️ TU ÚLTIMO INTENTO FALLÓ con 'malformed_function_call'. "
                                     "OBLIGATORIO: escribe el código en un bloque 'FILE: nombre.ext' + ``` en tu respuesta de texto. "
                                     "NO uses github_write con contenido grande. Solo texto + bloque markdown. "
-                                    "El sistema lo extraerá y subirá automáticamente."
+                                    "El sistema lo extraerá y guardará automáticamente."
                                 )
                             })
                             continue
@@ -1437,9 +1417,9 @@ class Agent:
                                 answer = f"⚠️ No he recibido respuesta del modelo (finish_reason: {finish_reason})."
 
                         if answer:
-                            subidos = await self._process_file_blocks(answer)
-                            if subidos:
-                                answer += f"\n\n📦 Subí {len(subidos)} archivo(s) a GitHub: {', '.join(subidos)}"
+                            guardados = await self._process_file_blocks(answer)
+                            if guardados:
+                                answer += f"\n\n📦 Guardé {len(guardados)} archivo(s) pendientes: {', '.join(guardados)}\nDime 'súbelo' si quieres subirlos a GitHub."
 
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
@@ -1514,6 +1494,8 @@ class Agent:
                     break
                 if "image" in err_txt or "vision" in err_txt or "multimodal" in err_txt or "modality" in err_txt:
                     print(f"[VISION] '{modelo_actual}' rechazó imagen. Siguiente.")
+                elif "audio" in err_txt:
+                    print(f"[AUDIO] '{modelo_actual}' rechazó audio. Siguiente.")
                 elif "404" in err_txt or "unavailable" in err_txt:
                     print(f"[MODEL-GONE] '{modelo_actual}' ya no existe.")
                 else:
