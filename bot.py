@@ -14,6 +14,7 @@ from ai import agent
 from config import config
 from connector import connector
 from motor import motor
+from web_panel import setup_panel
 
 
 # ============================================================
@@ -93,6 +94,8 @@ async def metrics(_: web.Request) -> web.Response:
 async def start_http() -> web.AppRunner:
 
     app = web.Application()
+
+    setup_panel(app)
 
     app.router.add_get("/", root)
     app.router.add_get("/health", health)
