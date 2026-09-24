@@ -26,6 +26,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
             "sambanova": ("sambanova", "https://api.sambanova.ai/v1"),
             "anthropic": ("anthropic", "https://api.anthropic.com/v1"),
             "xai": ("xai", "https://api.x.ai/v1"),
+            "bazaarlink": ("openai", "https://api.bazaarlink.ai/v1"),
         }
         if forced.lower() in forced_map:
             return forced_map[forced.lower()]
@@ -33,15 +34,22 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     key = (key or "").strip()
     url_env = os.getenv("AI_API_BASE_URL_1") or ""
 
+    # === BazaarLink ===
+    if key.startswith("sk-bl-"):
+        return "openai", "https://api.bazaarlink.ai/v1"
+
+    # === Gemini ===
     if key.startswith("AQ.") or key.startswith("AIza") or "generativelanguage.googleapis.com" in url_env:
         url = url_env or "https://generativelanguage.googleapis.com/v1beta"
         if url.rstrip("/").endswith("/openai"):
             url = url.rstrip("/")[:-7]
         return "gemini", url
 
+    # === Groq ===
     if key.startswith("gsk_"):
         return "groq", "https://api.groq.com/openai/v1"
 
+    # === Otros por prefijo ===
     if key.startswith("sk-ant-"):
         return "anthropic", "https://api.anthropic.com/v1"
     if key.startswith("sk-or-v1-"):
@@ -477,6 +485,11 @@ class AIConnector:
             else os.getenv("AI_PROVIDER")
         )
         provider, base_url = detect_provider(slot.key, forced)
+
+        # Si hay base_url específica del slot, la usamos
+        slot_base_url = getattr(slot, "base_url", None) or os.getenv(f"AI_API_BASE_URL_{slot.index}")
+        if slot_base_url:
+            base_url = slot_base_url
 
         payload = {
             "model": slot.model or model or "",
