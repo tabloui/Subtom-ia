@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -255,6 +256,113 @@ class Agent:
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
+            # ============================================================
+            # TELÉFONO (Termux)
+            # ============================================================
+            {"type": "function", "function": {
+                "name": "phone_status",
+                "description": "Muestra el estado del teléfono: batería, RAM, disco, modelo, Android, temperatura y app en primer plano.",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_battery",
+                "description": "Muestra el nivel de batería del teléfono y su estado (cargando, temperatura, etc).",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_location",
+                "description": "Obtiene la ubicación GPS actual del teléfono (latitud, longitud, altitud, velocidad).",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_wifi",
+                "description": "Muestra información de la red WiFi actual: SSID, IP, velocidad, etc.",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_sms",
+                "description": "Lee los últimos SMS recibidos en el teléfono.",
+                "parameters": {"type": "object", "properties": {
+                    "limit": {"type": "integer", "default": 10, "description": "Cuántos SMS leer"},
+                }},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_vibrate",
+                "description": "Hace vibrar el teléfono durante X milisegundos.",
+                "parameters": {"type": "object", "properties": {
+                    "ms": {"type": "integer", "default": 1000},
+                }},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_notify",
+                "description": "Muestra una notificación en el teléfono.",
+                "parameters": {"type": "object", "properties": {
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                }, "required": ["title", "content"]},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_torch",
+                "description": "Enciende o apaga la linterna del teléfono.",
+                "parameters": {"type": "object", "properties": {
+                    "state": {"type": "string", "enum": ["on", "off"]},
+                }, "required": ["state"]},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_brightness",
+                "description": "Ajusta el brillo de la pantalla del teléfono (0-255).",
+                "parameters": {"type": "object", "properties": {
+                    "level": {"type": "integer", "default": 200},
+                }},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_photo",
+                "description": "Saca una foto con la cámara del teléfono (0=trasera, 1=frontal).",
+                "parameters": {"type": "object", "properties": {
+                    "camera": {"type": "integer", "default": 0},
+                }},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_volume",
+                "description": "Ajusta el volumen del teléfono (stream: music, ring, alarm, notification).",
+                "parameters": {"type": "object", "properties": {
+                    "stream": {"type": "string", "default": "music"},
+                    "level": {"type": "integer", "default": 10},
+                }},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_clipboard_get",
+                "description": "Lee el contenido del portapapeles del teléfono.",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_clipboard_set",
+                "description": "Escribe texto en el portapapeles del teléfono.",
+                "parameters": {"type": "object", "properties": {
+                    "text": {"type": "string"},
+                }, "required": ["text"]},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_apps",
+                "description": "Lista las apps instaladas en el teléfono. Útil para saber qué apps hay.",
+                "parameters": {"type": "object", "properties": {
+                    "user_only": {"type": "boolean", "default": True, "description": "Si True, solo muestra apps instaladas por el usuario."},
+                }},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_processes",
+                "description": "Lista los procesos activos en el teléfono (top 30 por uso).",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "phone_shell",
+                "description": "Ejecuta un comando shell arbitrario en el teléfono. Úsalo con cuidado. Ejemplos: 'ls ~/', 'cat /proc/meminfo', 'pm list packages'.",
+                "parameters": {"type": "object", "properties": {
+                    "cmd": {"type": "string", "description": "Comando shell a ejecutar"},
+                }, "required": ["cmd"]},
+            }},
+
+            # WEB
             {"type": "function", "function": {
                 "name": "web_search",
                 "description": "Busca en internet con DuckDuckGo.",
@@ -271,6 +379,8 @@ class Agent:
                     "max_chars": {"type": "integer", "default": 8000},
                 }, "required": ["url"]},
             }},
+
+            # ARCHIVOS
             {"type": "function", "function": {
                 "name": "file_list",
                 "description": "Lista archivos y carpetas del workspace.",
@@ -358,6 +468,8 @@ class Agent:
                 "description": "Reemplaza texto en todos los archivos de una carpeta.",
                 "parameters": {"type": "object", "properties": {"directory": {"type": "string", "default": "."}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["old", "new"]},
             }},
+
+            # GITHUB
             {"type": "function", "function": {
                 "name": "github_search_code",
                 "description": "Busca archivos o código en GitHub antes de github_read.",
@@ -496,6 +608,8 @@ class Agent:
                 "description": "Hace fork de un repositorio.",
                 "parameters": {"type": "object", "properties": {"repo": {"type": "string"}}, "required": ["repo"]},
             }},
+
+            # VERCEL
             {"type": "function", "function": {
                 "name": "vercel_projects",
                 "description": "Lista tus proyectos de Vercel.",
@@ -516,6 +630,8 @@ class Agent:
                 "description": "Fuerza un nuevo deployment.",
                 "parameters": {"type": "object", "properties": {"project": {"type": "string"}, "target": {"type": "string", "default": "production"}}, "required": ["project"]},
             }},
+
+            # IMAGEN
             {"type": "function", "function": {
                 "name": "generate_image",
                 "description": (
@@ -526,6 +642,8 @@ class Agent:
                     "prompt": {"type": "string", "description": "Descripción detallada de la imagen a generar"},
                 }, "required": ["prompt"]},
             }},
+
+            # SANDBOX
             {"type": "function", "function": {
                 "name": "sandbox_run_python",
                 "description": "Ejecuta código Python en sandbox.",
@@ -596,6 +714,8 @@ class Agent:
                 "description": "Verifica un cambio en un archivo Python antes de subirlo.",
                 "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_content": {"type": "string"}, "new_content": {"type": "string"}}, "required": ["file_path", "old_content", "new_content"]},
             }},
+
+            # DISCORD
             {"type": "function", "function": {
                 "name": "discord_send_message",
                 "description": "Envía un mensaje a un canal.",
@@ -703,6 +823,101 @@ class Agent:
             }},
         ]
 
+    async def _run_phone_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Envía un comando al servidor del teléfono (Termux)."""
+        base_url = os.getenv("PHONE_SERVER_URL", "").rstrip("/")
+        secret = os.getenv("PHONE_SERVER_SECRET", "")
+
+        if not base_url or not secret:
+            return {"error": "PHONE_SERVER_URL o PHONE_SERVER_SECRET no configurados en Railway"}
+
+        headers = {"X-Secret": secret}
+        timeout = aiohttp.ClientTimeout(total=30)
+
+        endpoint = None
+        method = "GET"
+        params = {}
+
+        if name == "phone_status":
+            endpoint = "/status"
+        elif name == "phone_battery":
+            endpoint = "/battery"
+        elif name == "phone_location":
+            endpoint = "/location"
+        elif name == "phone_wifi":
+            endpoint = "/wifi"
+        elif name == "phone_sms":
+            endpoint = "/sms"
+            params["limit"] = args.get("limit", 10)
+        elif name == "phone_vibrate":
+            endpoint = "/vibrate"
+            method = "POST"
+            params["ms"] = args.get("ms", 1000)
+        elif name == "phone_notify":
+            endpoint = "/notify"
+            method = "POST"
+            params["title"] = args.get("title", "Subtom")
+            params["content"] = args.get("content", "")
+        elif name == "phone_torch":
+            endpoint = "/torch"
+            method = "POST"
+            params["state"] = args.get("state", "on")
+        elif name == "phone_brightness":
+            endpoint = "/brightness"
+            method = "POST"
+            params["level"] = args.get("level", 200)
+        elif name == "phone_photo":
+            endpoint = "/photo"
+            method = "POST"
+            params["camera"] = args.get("camera", 0)
+        elif name == "phone_volume":
+            endpoint = "/volume"
+            method = "POST"
+            params["stream"] = args.get("stream", "music")
+            params["level"] = args.get("level", 10)
+        elif name == "phone_clipboard_get":
+            endpoint = "/clipboard/get"
+        elif name == "phone_clipboard_set":
+            endpoint = "/clipboard/set"
+            method = "POST"
+            params["text"] = args.get("text", "")
+        elif name == "phone_apps":
+            endpoint = "/apps"
+            params["user_only"] = "1" if args.get("user_only", True) else "0"
+        elif name == "phone_processes":
+            endpoint = "/processes"
+        elif name == "phone_shell":
+            endpoint = "/shell"
+            method = "POST"
+            params["cmd"] = args.get("cmd", "")
+        else:
+            return {"error": f"Herramienta de teléfono desconocida: {name}"}
+
+        url = base_url + endpoint
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                if method == "POST":
+                    async with session.post(url, headers=headers, params=params) as resp:
+                        body = await resp.text()
+                        if resp.status != 200:
+                            return {"error": f"Phone HTTP {resp.status}", "detail": body[:500]}
+                        try:
+                            return json.loads(body)
+                        except Exception:
+                            return {"result": body[:2000]}
+                else:
+                    async with session.get(url, headers=headers, params=params) as resp:
+                        body = await resp.text()
+                        if resp.status != 200:
+                            return {"error": f"Phone HTTP {resp.status}", "detail": body[:500]}
+                        try:
+                            return json.loads(body)
+                        except Exception:
+                            return {"result": body[:2000]}
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
     async def run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
             if name in ("file_write", "file_append", "github_write"):
@@ -719,6 +934,10 @@ class Agent:
                                 "El sistema lo extraerá y guardará automáticamente sin límites."
                             ),
                         }
+
+            # TELÉFONO
+            if name.startswith("phone_"):
+                return await self._run_phone_tool(name, args)
 
             if name == "web_search":
                 return await self._cached_search(args)
