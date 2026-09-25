@@ -34,22 +34,18 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     key = (key or "").strip()
     url_env = os.getenv("AI_API_BASE_URL_1") or ""
 
-    # === BazaarLink ===
     if key.startswith("sk-bl-"):
         return "openai", "https://api.bazaarlink.ai/v1"
 
-    # === Gemini ===
     if key.startswith("AQ.") or key.startswith("AIza") or "generativelanguage.googleapis.com" in url_env:
         url = url_env or "https://generativelanguage.googleapis.com/v1beta"
         if url.rstrip("/").endswith("/openai"):
             url = url.rstrip("/")[:-7]
         return "gemini", url
 
-    # === Groq ===
     if key.startswith("gsk_"):
         return "groq", "https://api.groq.com/openai/v1"
 
-    # === Otros por prefijo ===
     if key.startswith("sk-ant-"):
         return "anthropic", "https://api.anthropic.com/v1"
     if key.startswith("sk-or-v1-"):
@@ -63,7 +59,7 @@ def detect_provider(key: str, forced: str | None = None) -> tuple[str, str]:
     if key.startswith("tgp_v1_"):
         return "together", "https://api.together.xyz/v1"
     if key.startswith("di_"):
-        return "deepinfra", "https://api.deepinfra.com/v1/openai"
+        return "deepinfra", "https://api.deepinfra.com/openai"
     if key.startswith("sk-proj-") or key.startswith("sk-"):
         return "openai", "https://api.openai.com/v1"
 
@@ -168,6 +164,35 @@ class AIConnector:
             "FORMATO DE RESPUESTA: Separa tus ideas en párrafos cortos con líneas en blanco "
             "entre ellos. Usa listas con guiones cuando enumeres cosas. Pon el código en "
             "bloques con ```. No metas todo en un solo bloque de texto.\n\n"
+            "CONTROL DEL TELÉFONO (MUY IMPORTANTE):\n"
+            "Tienes acceso al teléfono de Amin a través de una serie de herramientas que "
+            "empiezan por 'phone_'. Puedes hacer MUCHAS cosas reales en su móvil:\n"
+            "- phone_status: ver batería, RAM, disco, modelo, Android, temperatura\n"
+            "- phone_battery: solo la batería\n"
+            "- phone_location: ubicación GPS\n"
+            "- phone_wifi: info de la WiFi\n"
+            "- phone_sms: leer los últimos SMS\n"
+            "- phone_vibrate: hacer vibrar el teléfono\n"
+            "- phone_notify: enviar una notificación\n"
+            "- phone_torch: encender/apagar la linterna\n"
+            "- phone_brightness: ajustar el brillo\n"
+            "- phone_photo: sacar una foto (0=trasera, 1=frontal)\n"
+            "- phone_volume: ajustar el volumen\n"
+            "- phone_clipboard_get / phone_clipboard_set: leer/escribir el portapapeles\n"
+            "- phone_apps: listar apps instaladas\n"
+            "- phone_processes: ver procesos activos\n"
+            "- phone_shell: ejecutar CUALQUIER comando shell en el teléfono\n\n"
+            "USA estas herramientas cuando el usuario te pida algo relacionado con el "
+            "teléfono. Ejemplos:\n"
+            "- 'cuánta batería tengo' → phone_battery\n"
+            "- 'vibra 2 segundos' → phone_vibrate con ms=2000\n"
+            "- 'enciende la linterna' → phone_torch con state='on'\n"
+            "- 'qué apps tengo' → phone_apps\n"
+            "- 'notifícame: beber agua' → phone_notify\n"
+            "- 'sácame una foto' → phone_photo con camera=0\n"
+            "- 'dónde estoy' → phone_location\n\n"
+            "También puedes usar phone_shell para cosas más avanzadas (listar archivos, "
+            "ver procesos, etc.). Ejemplo: phone_shell con cmd='ls ~/' o cmd='df -h'.\n\n"
             "REGLA DE IMÁGENES (MUY IMPORTANTE):\n"
             "Tienes la herramienta generate_image, pero SOLO debes usarla cuando el usuario "
             "te lo pida de forma EXPLÍCITA con frases como:\n"
@@ -486,7 +511,6 @@ class AIConnector:
         )
         provider, base_url = detect_provider(slot.key, forced)
 
-        # Si hay base_url específica del slot, la usamos
         slot_base_url = getattr(slot, "base_url", None) or os.getenv(f"AI_API_BASE_URL_{slot.index}")
         if slot_base_url:
             base_url = slot_base_url
