@@ -32,18 +32,10 @@ REPO_PRINCIPAL = "tabloui/subtom-ia"
 
 MAX_LINES_PER_TOOL_CALL = 50
 
-# ============================================================
-# MODELOS DE REPLICATE
-# ============================================================
-RECRAFT_MODEL = "recraft-ai/recraft-v3"          # Logos y diseños con texto
-FLUX_MODEL = "black-forest-labs/flux-1.1-pro"    # Potencia general
-
-# ============================================================
-# PALABRAS CLAVE PARA DETECTAR TIPO DE IMAGEN
-# ============================================================
+RECRAFT_MODEL = "recraft-ai/recraft-v3"
+FLUX_MODEL = "black-forest-labs/flux-1.1-pro"
 
 PALABRAS_LOGO = [
-    # Español - Logo/marca
     "logo", "logotipo", "logotipos", "marca", "marcas",
     "brand", "branding", "identidad visual", "identidad corporativa",
     "icono", "ícono", "iconos", "íconos", "icon", "icons",
@@ -54,18 +46,15 @@ PALABRAS_LOGO = [
     "logotipo empresarial", "logotipo para empresa", "logo de empresa",
     "logotipo profesional", "logo minimalista", "logo moderno",
     "logo elegante", "logo creativo", "logo vectorial", "svg",
-    # Español - Texto en imagen
     "texto", "textos", "text", "letras", "letra", "letreros",
     "tipografía", "tipografia", "typography", "letras grandes",
     "texto en imagen", "con texto", "con letras", "con palabras",
-    # Inglés - Refuerzo
     "logo design", "brand logo", "company logo", "business logo",
     "vector logo", "minimalist logo", "modern logo", "text logo",
     "lettering", "wordmark", "emblem", "badge", "crest", "seal",
 ]
 
 PALABRAS_PERSONAJE = [
-    # Español - Personaje/Anime
     "personaje", "personajes", "character", "characters",
     "anime", "manga", "otaku", "shonen", "shojo", "seinen",
     "chibi", "kawaii", "waifu", "husbando",
@@ -87,7 +76,6 @@ PALABRAS_PERSONAJE = [
     "criatura", "monstruo", "bestia", "demonio", "ángel", "angel",
     "dios", "diosa", "semidiós", "titan", "titán",
     "cosplay", "fanart", "fan art", "original character", "oc",
-    # Inglés - Refuerzo
     "anime style", "manga style", "chibi style", "kawaii style",
     "cartoon style", "comic style", "retro anime", "modern anime",
     "character design", "character art", "portrait anime",
@@ -96,14 +84,9 @@ PALABRAS_PERSONAJE = [
 
 
 def _detectar_tipo(prompt: str) -> str:
-    """Devuelve 'logo', 'personaje' o 'general' según el prompt."""
     prompt_lower = prompt.lower()
-    
-    # Contar coincidencias
     coincidencias_logo = sum(1 for p in PALABRAS_LOGO if p in prompt_lower)
     coincidencias_personaje = sum(1 for p in PALABRAS_PERSONAJE if p in prompt_lower)
-    
-    # Priorizar: si hay más palabras de logo, es logo. Si hay más de personaje, es personaje.
     if coincidencias_logo > 0 and coincidencias_logo >= coincidencias_personaje:
         return "logo"
     if coincidencias_personaje > 0:
@@ -500,9 +483,8 @@ class Agent:
             {"type": "function", "function": {
                 "name": "github_delete_repo",
                 "description": (
-                    "ELIMINA un repositorio completo de GitHub. ⚠️ ACCIÓN IRREVERSIBLE. "
-                    "Solo usar cuando el usuario lo pida EXPLÍCITAMENTE con frases como "
-                    "'borra el repo X', 'elimina mi repositorio Y'. Nunca por iniciativa propia."
+                    "ELIMINA un repositorio completo de GitHub. ACCIÓN IRREVERSIBLE. "
+                    "Solo usar cuando el usuario lo pida EXPLÍCITAMENTE."
                 ),
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string", "description": "Formato: usuario/repositorio"},
@@ -1365,15 +1347,11 @@ class Agent:
                     return {"error": f"HTTP {resp.status}", "detail": data}
                 return {"id": data.get("id"), "url": data.get("url"), "status": data.get("status")}
 
-    # ================================================================
-    # GENERACIÓN DE IMÁGENES CON REPLICATE
-    # ================================================================
     async def generate_image(self, prompt: str, _retry: int = 0) -> dict[str, Any]:
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
         prompt = prompt.strip()
 
-        # Detectar tipo de imagen
         tipo = _detectar_tipo(prompt)
         print(f"[REPLICATE] Tipo detectado: {tipo}")
 
@@ -1404,7 +1382,12 @@ class Agent:
             loop = asyncio.get_event_loop()
 
             def _run_replicate():
-                return replicate.run(
+                token = os.getenv("REPLICATE_API_TOKEN", "").strip()
+                print(f"[REPLICATE] Token: {token[:6]}... (len={len(token)})")
+                if not token:
+                    raise RuntimeError("REPLICATE_API_TOKEN vacío en Railway")
+                client = replicate.Client(api_token=token)
+                return client.run(
                     modelo,
                     input={
                         "prompt": prompt_mejorado,
@@ -1419,7 +1402,6 @@ class Agent:
                 timeout=timeout_secs,
             )
 
-            # Recolectar URLs o streams de la respuesta
             image_url = None
             image_bytes = None
 
@@ -1437,7 +1419,6 @@ class Agent:
             else:
                 image_url = _extraer_url(output)
 
-            # Si no hay URL pero hay un stream
             if not image_url and hasattr(output, "read"):
                 try:
                     image_bytes = output.read()
@@ -1450,7 +1431,6 @@ class Agent:
             if not image_url:
                 return {"error": "Replicate no devolvió ninguna URL ni bytes"}
 
-            # Descargar imagen
             timeout = aiohttp.ClientTimeout(total=60)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(image_url) as resp:
@@ -1470,7 +1450,6 @@ class Agent:
             return {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
 
     async def _save_image(self, data: bytes, prompt: str, tipo: str = "general") -> dict[str, Any]:
-        """Guarda la imagen generada en el workspace y devuelve _send_file."""
         from datetime import datetime
         folder = Path(config.workspace) / "generated"
         folder.mkdir(parents=True, exist_ok=True)
@@ -1571,7 +1550,7 @@ class Agent:
                             messages.append({
                                 "role": "user",
                                 "content": (
-                                    "⚠️ TU ÚLTIMO INTENTO FALLÓ con 'malformed_function_call'. "
+                                    "TU ÚLTIMO INTENTO FALLÓ con 'malformed_function_call'. "
                                     "OBLIGATORIO: escribe el código en un bloque 'FILE: nombre.ext' + ``` en tu respuesta de texto. "
                                     "NO uses github_write con contenido grande. Solo texto + bloque markdown. "
                                     "El sistema lo extraerá y guardará automáticamente."
@@ -1579,7 +1558,7 @@ class Agent:
                             })
                             continue
                         else:
-                            answer = "⚠️ Gemini falló 3 veces con 'malformed_function_call'. Prueba de nuevo."
+                            answer = "Gemini falló 3 veces con 'malformed_function_call'. Prueba de nuevo."
                             await self.save(user_id, channel_id, "assistant", answer)
                             return answer, image_url, files_to_send or None
 
@@ -1587,18 +1566,18 @@ class Agent:
                         answer = (message.get("content") or "").strip()
                         if not answer:
                             if finish_reason in ("safety", "recitation", "blocked", "prohibited_content"):
-                                answer = f"⚠️ Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish_reason})."
+                                answer = f"Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish_reason})."
                             elif finish_reason == "max_tokens":
-                                answer = "⚠️ La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
+                                answer = "La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
                             elif finish_reason == "other":
-                                answer = "⚠️ Gemini devolvió un error genérico. Prueba otra vez."
+                                answer = "Gemini devolvió un error genérico. Prueba otra vez."
                             else:
-                                answer = f"⚠️ No he recibido respuesta del modelo (finish_reason: {finish_reason})."
+                                answer = f"No he recibido respuesta del modelo (finish_reason: {finish_reason})."
 
                         if answer:
                             guardados = await self._process_file_blocks(answer)
                             if guardados:
-                                answer += f"\n\n📦 Guardé {len(guardados)} archivo(s) pendientes: {', '.join(guardados)}\nDime 'súbelo' si quieres subirlos a GitHub."
+                                answer += f"\n\nGuardé {len(guardados)} archivo(s) pendientes: {', '.join(guardados)}\nDime 'súbelo' si quieres subirlos a GitHub."
 
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
@@ -1639,7 +1618,7 @@ class Agent:
                         if isinstance(result, dict) and result.get("_no_retry"):
                             err_msg = result.get("error", "error desconocido")
                             extra = result.get("instruction", "")
-                            answer = f"⚠️ No pude completar la operación: {err_msg}"
+                            answer = f"No pude completar la operación: {err_msg}"
                             if extra:
                                 answer += f"\n\n{extra}"
                             await self.save(user_id, channel_id, "assistant", answer)
