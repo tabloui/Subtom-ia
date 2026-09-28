@@ -31,6 +31,9 @@ REPO_PRINCIPAL = "tabloui/subtom-ia"
 
 MAX_LINES_PER_TOOL_CALL = 50
 
+# Los 3 modelos más potentes de Pollinations
+POLLINATIONS_MODELS = ["flux", "flux-realism", "turbo"]
+
 PALABRAS_LOGO = [
     "logo", "logotipo", "logotipos", "marca", "marcas",
     "brand", "branding", "identidad visual", "identidad corporativa",
@@ -579,7 +582,7 @@ class Agent:
             {"type": "function", "function": {
                 "name": "generate_image",
                 "description": (
-                    "Genera imágenes con IA usando SenseNova. "
+                    "Genera imágenes con IA usando Pollinations. "
                     "Detecta automáticamente si es logo, personaje o general y adapta el prompt. "
                     "SOLO usar cuando el usuario pida EXPLÍCITAMENTE una imagen. "
                     "NO usar en conversación normal."
@@ -1347,110 +1350,96 @@ class Agent:
             return {"error": "prompt vacío"}
         prompt = prompt.strip()
 
-        api_key = os.getenv("SENSENOVA_API_KEY", "").strip()
-        if not api_key:
-            return {"error": "Falta SENSENOVA_API_KEY en Railway"}
-
         tipo = _detectar_tipo(prompt)
-        print(f"[SENSENOVA] Tipo detectado: {tipo}")
+        print(f"[POLLINATIONS] Tipo detectado: {tipo}")
 
         if tipo == "logo":
             prompt_mejorado = (
                 f"{prompt}, professional logo design, vector style, "
-                "clean lines, minimalist, sharp text, modern branding, "
-                "white background, centered, high quality"
+                "clean lines, minimalist, high quality, sharp text, "
+                "modern branding, white background, centered composition"
             )
         elif tipo == "personaje":
             prompt_mejorado = (
                 f"{prompt}, highly detailed character art, beautiful illustration, "
-                "professional quality, sharp focus, vibrant colors, masterpiece, 8k"
+                "professional quality, sharp focus, vibrant colors, "
+                "masterpiece, trending on artstation, 8k"
             )
         else:
             prompt_mejorado = (
-                f"{prompt}, highly detailed, professional quality, sharp focus, "
-                "8k, beautiful lighting, masterpiece"
+                f"{prompt}, highly detailed, professional quality, "
+                "sharp focus, 8k, beautiful lighting, masterpiece, "
+                "cinematic composition"
             )
 
-        url = "https://token.sensenova.cn/v1/images/generations"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": "SenseNova-U1.5-Lite",
-            "prompt": prompt_mejorado,
-            "n": 1,
-            "size": "1024x1024",
-            "response_format": "b64_json",
-        }
+        prompt_encoded = aiohttp.helpers.quote(prompt_mejorado, safe="")
+        model = POLLINATIONS_MODELS[_retry % len(POLLINATIONS_MODELS)]
+
+        url = (
+            f"https://image.pollinations.ai/prompt/{prompt_encoded}"
+            f"?model={model}&width=1024&height=1024&nologo=true&enhance=true&safe=false"
+        )
 
         try:
             timeout = aiohttp.ClientTimeout(total=120)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, headers=headers, json=payload) as resp:
-                    body = await resp.text()
+                async with session.get(url) as resp:
+                    if resp.status in (500, 502, 503, 504):
+                        print(f"[POLLINATIONS] HTTP {resp.status} con model={model} (intento {_retry + 1}/3)")
+                        if _retry < len(POLLINATIONS_MODELS) - 1:
+                            await asyncio.sleep(2)
+                            return await self.generate_image(prompt, _retry + 1)
+                        return {"error": f"Pollinations HTTP {resp.status} tras {len(POLLINATIONS_MODELS)} intentos"}
                     if resp.status != 200:
-                        print(f"[SENSENOVA] HTTP {resp.status}: {body[:300]}")
-                        return {"error": f"SenseNova HTTP {resp.status}: {body[:300]}"}
+                        return {"error": f"Pollinations HTTP {resp.status}"}
+                    data = await resp.read()
 
-                    try:
-                        data = json.loads(body)
-                    except Exception:
-                        return {"error": f"Respuesta no es JSON: {body[:200]}"}
+            if not data or len(data) < 1000:
+                print(f"[POLLINATIONS] Respuesta demasiado pequeña ({len(data)} bytes). Reintentando...")
+                if _retry < len(POLLINATIONS_MODELS) - 1:
+                    await asyncio.sleep(2)
+                    return await self.generate_image(prompt, _retry + 1)
+                return {"error": "Pollinations devolvió una respuesta vacía o inválida"}
 
-                    item = (data.get("data") or [{}])[0]
-                    image_b64 = item.get("b64_json")
-                    image_url = item.get("url")
+            from datetime import datetime
+            folder = Path(config.workspace) / "generated"
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            slug = re.sub(r"[^a-z0-9]+", "_", prompt.lower())[:30]
 
-                    if image_b64:
-                        image_bytes = base64.b64decode(image_b64)
-                    elif image_url:
-                        async with session.get(image_url) as r:
-                            if r.status != 200:
-                                return {"error": f"No pude descargar la imagen (HTTP {r.status})"}
-                            image_bytes = await r.read()
-                    else:
-                        return {"error": "SenseNova no devolvió imagen"}
+            if tipo == "logo":
+                filename = f"logo_{stamp}_{slug}.png"
+                caption = f"🎨 Logo creado con Pollinations ({model})\n\n_Prompt:_ {prompt[:200]}"
+            elif tipo == "personaje":
+                filename = f"personaje_{stamp}_{slug}.png"
+                caption = f"🎨 Personaje creado con Pollinations ({model})\n\n_Prompt:_ {prompt[:200]}"
+            else:
+                filename = f"{stamp}_{slug}.png"
+                caption = f"🎨 Imagen creada con Pollinations ({model})\n\n_Prompt:_ {prompt[:200]}"
 
-                    if not image_bytes or len(image_bytes) < 1000:
-                        return {"error": "La imagen recibida está vacía"}
+            target = folder / filename
+            target.write_bytes(data)
+            abs_path = str(target.resolve())
 
-                    return await self._save_image(image_bytes, prompt, tipo)
+            print(f"[POLLINATIONS] Imagen generada con {model}: {abs_path} ({len(data)} bytes)")
+
+            return {
+                "local_path": abs_path,
+                "_send_file": abs_path,
+                "caption": caption,
+            }
 
         except asyncio.TimeoutError:
-            return {"error": "SenseNova tardó demasiado"}
+            print(f"[POLLINATIONS] Timeout con model={model} (intento {_retry + 1}/3)")
+            if _retry < len(POLLINATIONS_MODELS) - 1:
+                return await self.generate_image(prompt, _retry + 1)
+            return {"error": "Pollinations tardó demasiado"}
         except Exception as exc:
-            print(f"[SENSENOVA] Excepción: {type(exc).__name__}: {exc}")
-            return {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
-
-    async def _save_image(self, data: bytes, prompt: str, tipo: str = "general") -> dict[str, Any]:
-        from datetime import datetime
-        folder = Path(config.workspace) / "generated"
-        folder.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        slug = re.sub(r"[^a-z0-9]+", "_", prompt.lower())[:30]
-
-        if tipo == "logo":
-            filename = f"logo_{stamp}_{slug}.png"
-            caption = f"🎨 Logo creado con SenseNova IA\n\n_Prompt:_ {prompt[:200]}"
-        elif tipo == "personaje":
-            filename = f"personaje_{stamp}_{slug}.png"
-            caption = f"🎨 Personaje creado con SenseNova IA\n\n_Prompt:_ {prompt[:200]}"
-        else:
-            filename = f"{stamp}_{slug}.png"
-            caption = f"🎨 Imagen creada con SenseNova IA\n\n_Prompt:_ {prompt[:200]}"
-
-        target = folder / filename
-        target.write_bytes(data)
-        abs_path = str(target.resolve())
-
-        print(f"[SENSENOVA] Imagen guardada: {abs_path} ({len(data)} bytes)")
-
-        return {
-            "local_path": abs_path,
-            "_send_file": abs_path,
-            "caption": caption,
-        }
+            print(f"[POLLINATIONS] Excepción con model={model}: {type(exc).__name__}: {exc}")
+            if _retry < len(POLLINATIONS_MODELS) - 1:
+                await asyncio.sleep(2)
+                return await self.generate_image(prompt, _retry + 1)
+            return {"error": f"{type(exc).__name__}: {exc}"}
 
     async def ask(
         self,
@@ -1532,7 +1521,7 @@ class Agent:
                             })
                             continue
                         else:
-                            answer = "Gemini falló 3 veces con 'malformed_function_call'. Prueba de nuevo."
+                            answer = "El modelo falló 3 veces con 'malformed_function_call'. Prueba de nuevo."
                             await self.save(user_id, channel_id, "assistant", answer)
                             return answer, image_url, files_to_send or None
 
@@ -1540,11 +1529,11 @@ class Agent:
                         answer = (message.get("content") or "").strip()
                         if not answer:
                             if finish_reason in ("safety", "recitation", "blocked", "prohibited_content"):
-                                answer = f"Gemini bloqueó mi respuesta por sus filtros de seguridad ({finish_reason})."
+                                answer = f"El modelo bloqueó mi respuesta por sus filtros de seguridad ({finish_reason})."
                             elif finish_reason == "max_tokens":
                                 answer = "La respuesta se cortó por límite de tokens. Sube AI_MAX_TOKENS."
                             elif finish_reason == "other":
-                                answer = "Gemini devolvió un error genérico. Prueba otra vez."
+                                answer = "El modelo devolvió un error genérico. Prueba otra vez."
                             else:
                                 answer = f"No he recibido respuesta del modelo (finish_reason: {finish_reason})."
 
