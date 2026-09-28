@@ -11,7 +11,6 @@ from typing import Any
 
 import aiohttp
 import asyncpg
-import replicate
 
 from config import config
 from connector import connector
@@ -31,9 +30,6 @@ AUDIO_EXTENSIONS = {
 REPO_PRINCIPAL = "tabloui/subtom-ia"
 
 MAX_LINES_PER_TOOL_CALL = 50
-
-RECRAFT_MODEL = "recraft-ai/recraft-v3"
-FLUX_MODEL = "black-forest-labs/flux-1.1-pro"
 
 PALABRAS_LOGO = [
     "logo", "logotipo", "logotipos", "marca", "marcas",
@@ -583,9 +579,8 @@ class Agent:
             {"type": "function", "function": {
                 "name": "generate_image",
                 "description": (
-                    "Genera imágenes con IA usando Replicate. "
-                    "Usa Recraft para logos, marcas, iconos y texto. "
-                    "Usa Flux para personajes, anime, ilustraciones y todo lo demás. "
+                    "Genera imágenes con IA usando SenseNova. "
+                    "Detecta automáticamente si es logo, personaje o general y adapta el prompt. "
                     "SOLO usar cuando el usuario pida EXPLÍCITAMENTE una imagen. "
                     "NO usar en conversación normal."
                 ),
@@ -1352,101 +1347,80 @@ class Agent:
             return {"error": "prompt vacío"}
         prompt = prompt.strip()
 
+        api_key = os.getenv("SENSENOVA_API_KEY", "").strip()
+        if not api_key:
+            return {"error": "Falta SENSENOVA_API_KEY en Railway"}
+
         tipo = _detectar_tipo(prompt)
-        print(f"[REPLICATE] Tipo detectado: {tipo}")
+        print(f"[SENSENOVA] Tipo detectado: {tipo}")
 
         if tipo == "logo":
-            modelo = RECRAFT_MODEL
             prompt_mejorado = (
                 f"{prompt}, professional logo design, vector style, "
-                "clean lines, minimalist, high quality, sharp text, "
-                "modern branding, white background, centered composition"
+                "clean lines, minimalist, sharp text, modern branding, "
+                "white background, centered, high quality"
             )
         elif tipo == "personaje":
-            modelo = FLUX_MODEL
             prompt_mejorado = (
                 f"{prompt}, highly detailed character art, beautiful illustration, "
-                "professional quality, sharp focus, vibrant colors, "
-                "masterpiece, trending on artstation, 8k"
+                "professional quality, sharp focus, vibrant colors, masterpiece, 8k"
             )
         else:
-            modelo = FLUX_MODEL
             prompt_mejorado = (
-                f"{prompt}, highly detailed, professional quality, "
-                "sharp focus, 8k, beautiful lighting, masterpiece, "
-                "cinematic composition"
+                f"{prompt}, highly detailed, professional quality, sharp focus, "
+                "8k, beautiful lighting, masterpiece"
             )
+
+        url = "https://token.sensenova.cn/v1/images/generations"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "SenseNova-U1.5-Lite",
+            "prompt": prompt_mejorado,
+            "n": 1,
+            "size": "1024x1024",
+            "response_format": "b64_json",
+        }
 
         try:
-            timeout_secs = 180
-            loop = asyncio.get_event_loop()
-
-            def _run_replicate():
-                token = os.getenv("REPLICATE_API_TOKEN", "").strip()
-                print(f"[REPLICATE] Token: {token[:6]}... (len={len(token)})")
-                if not token:
-                    raise RuntimeError("REPLICATE_API_TOKEN vacío en Railway")
-                client = replicate.Client(api_token=token)
-                return client.run(
-                    modelo,
-                    input={
-                        "prompt": prompt_mejorado,
-                        "aspect_ratio": "1:1",
-                        "output_format": "png",
-                        "output_quality": 95,
-                    },
-                )
-
-            output = await asyncio.wait_for(
-                loop.run_in_executor(None, _run_replicate),
-                timeout=timeout_secs,
-            )
-
-            image_url = None
-            image_bytes = None
-
-            def _extraer_url(o):
-                if isinstance(o, str):
-                    return o
-                if isinstance(o, list) and o:
-                    return str(o[0])
-                if hasattr(o, "url"):
-                    return str(o.url)
-                return None
-
-            if isinstance(output, list) and output:
-                image_url = _extraer_url(output[0])
-            else:
-                image_url = _extraer_url(output)
-
-            if not image_url and hasattr(output, "read"):
-                try:
-                    image_bytes = output.read()
-                except Exception:
-                    image_bytes = None
-
-            if image_bytes:
-                return await self._save_image(image_bytes, prompt, tipo)
-
-            if not image_url:
-                return {"error": "Replicate no devolvió ninguna URL ni bytes"}
-
-            timeout = aiohttp.ClientTimeout(total=60)
+            timeout = aiohttp.ClientTimeout(total=120)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(image_url) as resp:
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    body = await resp.text()
                     if resp.status != 200:
-                        return {"error": f"No pude descargar la imagen (HTTP {resp.status})"}
-                    image_bytes = await resp.read()
+                        print(f"[SENSENOVA] HTTP {resp.status}: {body[:300]}")
+                        return {"error": f"SenseNova HTTP {resp.status}: {body[:300]}"}
 
-            if not image_bytes or len(image_bytes) < 1000:
-                return {"error": "La imagen descargada está vacía"}
+                    try:
+                        data = json.loads(body)
+                    except Exception:
+                        return {"error": f"Respuesta no es JSON: {body[:200]}"}
 
-            return await self._save_image(image_bytes, prompt, tipo)
+                    item = (data.get("data") or [{}])[0]
+                    image_b64 = item.get("b64_json")
+                    image_url = item.get("url")
+
+                    if image_b64:
+                        image_bytes = base64.b64decode(image_b64)
+                    elif image_url:
+                        async with session.get(image_url) as r:
+                            if r.status != 200:
+                                return {"error": f"No pude descargar la imagen (HTTP {r.status})"}
+                            image_bytes = await r.read()
+                    else:
+                        return {"error": "SenseNova no devolvió imagen"}
+
+                    if not image_bytes or len(image_bytes) < 1000:
+                        return {"error": "La imagen recibida está vacía"}
+
+                    return await self._save_image(image_bytes, prompt, tipo)
 
         except asyncio.TimeoutError:
-            return {"error": f"Replicate tardó más de {timeout_secs}s"}
+            return {"error": "SenseNova tardó demasiado"}
         except Exception as exc:
-            print(f"[REPLICATE] Excepción: {type(exc).__name__}: {exc}")
+            print(f"[SENSENOVA] Excepción: {type(exc).__name__}: {exc}")
             return {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
 
     async def _save_image(self, data: bytes, prompt: str, tipo: str = "general") -> dict[str, Any]:
@@ -1458,19 +1432,19 @@ class Agent:
 
         if tipo == "logo":
             filename = f"logo_{stamp}_{slug}.png"
-            caption = f"🎨 Logo creado con Recraft IA\n\n_Prompt:_ {prompt[:200]}"
+            caption = f"🎨 Logo creado con SenseNova IA\n\n_Prompt:_ {prompt[:200]}"
         elif tipo == "personaje":
             filename = f"personaje_{stamp}_{slug}.png"
-            caption = f"🎨 Personaje creado con Flux 1.1 Pro\n\n_Prompt:_ {prompt[:200]}"
+            caption = f"🎨 Personaje creado con SenseNova IA\n\n_Prompt:_ {prompt[:200]}"
         else:
             filename = f"{stamp}_{slug}.png"
-            caption = f"🎨 Imagen creada con Flux 1.1 Pro\n\n_Prompt:_ {prompt[:200]}"
+            caption = f"🎨 Imagen creada con SenseNova IA\n\n_Prompt:_ {prompt[:200]}"
 
         target = folder / filename
         target.write_bytes(data)
         abs_path = str(target.resolve())
 
-        print(f"[REPLICATE] Imagen guardada: {abs_path} ({len(data)} bytes)")
+        print(f"[SENSENOVA] Imagen guardada: {abs_path} ({len(data)} bytes)")
 
         return {
             "local_path": abs_path,
