@@ -11,6 +11,7 @@ from aiohttp import web
 import discord
 
 from ai import agent
+from api_motor import setup_api
 from config import config
 from connector import connector
 from motor import motor
@@ -96,6 +97,7 @@ async def start_http() -> web.AppRunner:
     app = web.Application()
 
     setup_panel(app)
+    setup_api(app)
 
     app.router.add_get("/", root)
     app.router.add_get("/health", health)
