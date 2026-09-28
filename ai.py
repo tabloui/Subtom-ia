@@ -11,6 +11,7 @@ from typing import Any
 
 import aiohttp
 import asyncpg
+import replicate
 
 from config import config
 from connector import connector
@@ -31,7 +32,83 @@ REPO_PRINCIPAL = "tabloui/subtom-ia"
 
 MAX_LINES_PER_TOOL_CALL = 50
 
-POLLINATIONS_MODELS = ["flux", "turbo", "flux-realism", "flux-anime"]
+# ============================================================
+# MODELOS DE REPLICATE
+# ============================================================
+RECRAFT_MODEL = "recraft-ai/recraft-v3"          # Logos y diseños con texto
+FLUX_MODEL = "black-forest-labs/flux-1.1-pro"    # Potencia general
+
+# ============================================================
+# PALABRAS CLAVE PARA DETECTAR TIPO DE IMAGEN
+# ============================================================
+
+PALABRAS_LOGO = [
+    # Español - Logo/marca
+    "logo", "logotipo", "logotipos", "marca", "marcas",
+    "brand", "branding", "identidad visual", "identidad corporativa",
+    "icono", "ícono", "iconos", "íconos", "icon", "icons",
+    "emblema", "emblemas", "sello", "sellos", "insignia", "insignias",
+    "monograma", "monogramas", "isotipo", "isotipos", "imagotipo",
+    "logotipo tipográfico", "logotipo con texto", "logotipo con letras",
+    "diseño de logo", "diseño de marca", "diseño corporativo",
+    "logotipo empresarial", "logotipo para empresa", "logo de empresa",
+    "logotipo profesional", "logo minimalista", "logo moderno",
+    "logo elegante", "logo creativo", "logo vectorial", "svg",
+    # Español - Texto en imagen
+    "texto", "textos", "text", "letras", "letra", "letreros",
+    "tipografía", "tipografia", "typography", "letras grandes",
+    "texto en imagen", "con texto", "con letras", "con palabras",
+    # Inglés - Refuerzo
+    "logo design", "brand logo", "company logo", "business logo",
+    "vector logo", "minimalist logo", "modern logo", "text logo",
+    "lettering", "wordmark", "emblem", "badge", "crest", "seal",
+]
+
+PALABRAS_PERSONAJE = [
+    # Español - Personaje/Anime
+    "personaje", "personajes", "character", "characters",
+    "anime", "manga", "otaku", "shonen", "shojo", "seinen",
+    "chibi", "kawaii", "waifu", "husbando",
+    "ilustración anime", "estilo anime", "dibujo anime",
+    "personaje anime", "personaje de anime", "personaje manga",
+    "personaje de manga", "estilo manga", "caricatura",
+    "dibujo animado", "cartoon", "cómic", "comic", "historieta",
+    "superhéroe", "superheroe", "superhéroes", "villano", "villana",
+    "héroe", "heroe", "heroína", "heroina",
+    "avatar", "avatares", "retrato", "retratos", "busto",
+    "chico anime", "chica anime", "chico manga", "chica manga",
+    "samurái", "samurai", "ninja", "guerrero", "guerrera",
+    "mago", "maga", "hechicero", "hechicera", "elfo", "elfa",
+    "orco", "orca", "enano", "enana", "dragón", "dragon",
+    "princesa", "príncipe", "principe", "reina", "rey",
+    "estudiante", "colegiala", "colegial", "escolar",
+    "mecha", "robot gigante", "cyborg", "androide",
+    "vampiro", "vampira", "zombi", "zombie", "fantasma",
+    "criatura", "monstruo", "bestia", "demonio", "ángel", "angel",
+    "dios", "diosa", "semidiós", "titan", "titán",
+    "cosplay", "fanart", "fan art", "original character", "oc",
+    # Inglés - Refuerzo
+    "anime style", "manga style", "chibi style", "kawaii style",
+    "cartoon style", "comic style", "retro anime", "modern anime",
+    "character design", "character art", "portrait anime",
+    "anime girl", "anime boy", "anime portrait", "waifu art",
+]
+
+
+def _detectar_tipo(prompt: str) -> str:
+    """Devuelve 'logo', 'personaje' o 'general' según el prompt."""
+    prompt_lower = prompt.lower()
+    
+    # Contar coincidencias
+    coincidencias_logo = sum(1 for p in PALABRAS_LOGO if p in prompt_lower)
+    coincidencias_personaje = sum(1 for p in PALABRAS_PERSONAJE if p in prompt_lower)
+    
+    # Priorizar: si hay más palabras de logo, es logo. Si hay más de personaje, es personaje.
+    if coincidencias_logo > 0 and coincidencias_logo >= coincidencias_personaje:
+        return "logo"
+    if coincidencias_personaje > 0:
+        return "personaje"
+    return "general"
 
 
 class Agent:
@@ -524,8 +601,11 @@ class Agent:
             {"type": "function", "function": {
                 "name": "generate_image",
                 "description": (
-                    "SOLO usar cuando el usuario pida EXPLÍCITAMENTE una imagen, dibujo, logo o ilustración. "
-                    "NO usar en conversación normal. Si el usuario no ha pedido una imagen, NO llames a esta herramienta."
+                    "Genera imágenes con IA usando Replicate. "
+                    "Usa Recraft para logos, marcas, iconos y texto. "
+                    "Usa Flux para personajes, anime, ilustraciones y todo lo demás. "
+                    "SOLO usar cuando el usuario pida EXPLÍCITAMENTE una imagen. "
+                    "NO usar en conversación normal."
                 ),
                 "parameters": {"type": "object", "properties": {
                     "prompt": {"type": "string", "description": "Descripción detallada de la imagen a generar"},
@@ -1285,70 +1365,139 @@ class Agent:
                     return {"error": f"HTTP {resp.status}", "detail": data}
                 return {"id": data.get("id"), "url": data.get("url"), "status": data.get("status")}
 
+    # ================================================================
+    # GENERACIÓN DE IMÁGENES CON REPLICATE
+    # ================================================================
     async def generate_image(self, prompt: str, _retry: int = 0) -> dict[str, Any]:
         if not prompt or not prompt.strip():
             return {"error": "prompt vacío"}
         prompt = prompt.strip()
 
-        prompt_encoded = aiohttp.helpers.quote(prompt, safe="")
+        # Detectar tipo de imagen
+        tipo = _detectar_tipo(prompt)
+        print(f"[REPLICATE] Tipo detectado: {tipo}")
 
-        model = POLLINATIONS_MODELS[_retry % len(POLLINATIONS_MODELS)]
-
-        url = (
-            f"https://image.pollinations.ai/prompt/{prompt_encoded}"
-            f"?model={model}&width=1024&height=1024&nologo=true&enhance=true"
-        )
+        if tipo == "logo":
+            modelo = RECRAFT_MODEL
+            prompt_mejorado = (
+                f"{prompt}, professional logo design, vector style, "
+                "clean lines, minimalist, high quality, sharp text, "
+                "modern branding, white background, centered composition"
+            )
+        elif tipo == "personaje":
+            modelo = FLUX_MODEL
+            prompt_mejorado = (
+                f"{prompt}, highly detailed character art, beautiful illustration, "
+                "professional quality, sharp focus, vibrant colors, "
+                "masterpiece, trending on artstation, 8k"
+            )
+        else:
+            modelo = FLUX_MODEL
+            prompt_mejorado = (
+                f"{prompt}, highly detailed, professional quality, "
+                "sharp focus, 8k, beautiful lighting, masterpiece, "
+                "cinematic composition"
+            )
 
         try:
-            timeout = aiohttp.ClientTimeout(total=120)
+            timeout_secs = 180
+            loop = asyncio.get_event_loop()
+
+            def _run_replicate():
+                return replicate.run(
+                    modelo,
+                    input={
+                        "prompt": prompt_mejorado,
+                        "aspect_ratio": "1:1",
+                        "output_format": "png",
+                        "output_quality": 95,
+                    },
+                )
+
+            output = await asyncio.wait_for(
+                loop.run_in_executor(None, _run_replicate),
+                timeout=timeout_secs,
+            )
+
+            # Recolectar URLs o streams de la respuesta
+            image_url = None
+            image_bytes = None
+
+            def _extraer_url(o):
+                if isinstance(o, str):
+                    return o
+                if isinstance(o, list) and o:
+                    return str(o[0])
+                if hasattr(o, "url"):
+                    return str(o.url)
+                return None
+
+            if isinstance(output, list) and output:
+                image_url = _extraer_url(output[0])
+            else:
+                image_url = _extraer_url(output)
+
+            # Si no hay URL pero hay un stream
+            if not image_url and hasattr(output, "read"):
+                try:
+                    image_bytes = output.read()
+                except Exception:
+                    image_bytes = None
+
+            if image_bytes:
+                return await self._save_image(image_bytes, prompt, tipo)
+
+            if not image_url:
+                return {"error": "Replicate no devolvió ninguna URL ni bytes"}
+
+            # Descargar imagen
+            timeout = aiohttp.ClientTimeout(total=60)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as resp:
-                    if resp.status == 500 or resp.status == 502 or resp.status == 503:
-                        print(f"[POLLINATIONS] HTTP {resp.status} con model={model} (intento {_retry + 1}/3)")
-                        if _retry < 2:
-                            await asyncio.sleep(2)
-                            return await self.generate_image(prompt, _retry + 1)
-                        return {"error": f"Pollinations HTTP {resp.status} tras 3 intentos con modelos distintos"}
+                async with session.get(image_url) as resp:
                     if resp.status != 200:
-                        return {"error": f"Pollinations HTTP {resp.status}"}
-                    data = await resp.read()
+                        return {"error": f"No pude descargar la imagen (HTTP {resp.status})"}
+                    image_bytes = await resp.read()
 
-            if not data or len(data) < 1000:
-                print(f"[POLLINATIONS] Respuesta demasiado pequeña ({len(data)} bytes). Reintentando...")
-                if _retry < 2:
-                    await asyncio.sleep(2)
-                    return await self.generate_image(prompt, _retry + 1)
-                return {"error": "Pollinations devolvió una respuesta vacía o inválida"}
+            if not image_bytes or len(image_bytes) < 1000:
+                return {"error": "La imagen descargada está vacía"}
 
-            from datetime import datetime
-            folder = Path(config.workspace) / "generated"
-            folder.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            slug = re.sub(r"[^a-z0-9]+", "_", prompt.lower())[:30]
-            filename = f"{stamp}_{slug}.png"
-            target = folder / filename
-            target.write_bytes(data)
-
-            abs_path = str(target.resolve())
-            print(f"[POLLINATIONS] Imagen generada con {model}: {abs_path} ({len(data)} bytes)")
-
-            return {
-                "local_path": abs_path,
-                "_send_file": abs_path,
-                "caption": f"🎨 Imagen creada con Subtom IA Image\n\n_Prompt:_ {prompt[:200]}",
-            }
+            return await self._save_image(image_bytes, prompt, tipo)
 
         except asyncio.TimeoutError:
-            print(f"[POLLINATIONS] Timeout con model={model} (intento {_retry + 1}/3)")
-            if _retry < 2:
-                return await self.generate_image(prompt, _retry + 1)
-            return {"error": "Pollinations tardó demasiado tras 3 intentos"}
+            return {"error": f"Replicate tardó más de {timeout_secs}s"}
         except Exception as exc:
-            print(f"[POLLINATIONS] Excepción con model={model}: {type(exc).__name__}: {exc}")
-            if _retry < 2:
-                await asyncio.sleep(2)
-                return await self.generate_image(prompt, _retry + 1)
-            return {"error": f"{type(exc).__name__}: {exc}"}
+            print(f"[REPLICATE] Excepción: {type(exc).__name__}: {exc}")
+            return {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+
+    async def _save_image(self, data: bytes, prompt: str, tipo: str = "general") -> dict[str, Any]:
+        """Guarda la imagen generada en el workspace y devuelve _send_file."""
+        from datetime import datetime
+        folder = Path(config.workspace) / "generated"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = re.sub(r"[^a-z0-9]+", "_", prompt.lower())[:30]
+
+        if tipo == "logo":
+            filename = f"logo_{stamp}_{slug}.png"
+            caption = f"🎨 Logo creado con Recraft IA\n\n_Prompt:_ {prompt[:200]}"
+        elif tipo == "personaje":
+            filename = f"personaje_{stamp}_{slug}.png"
+            caption = f"🎨 Personaje creado con Flux 1.1 Pro\n\n_Prompt:_ {prompt[:200]}"
+        else:
+            filename = f"{stamp}_{slug}.png"
+            caption = f"🎨 Imagen creada con Flux 1.1 Pro\n\n_Prompt:_ {prompt[:200]}"
+
+        target = folder / filename
+        target.write_bytes(data)
+        abs_path = str(target.resolve())
+
+        print(f"[REPLICATE] Imagen guardada: {abs_path} ({len(data)} bytes)")
+
+        return {
+            "local_path": abs_path,
+            "_send_file": abs_path,
+            "caption": caption,
+        }
 
     async def ask(
         self,
