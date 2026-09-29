@@ -161,7 +161,6 @@ class AIConnector:
 
     def system_prompt(self) -> str:
         return (
-            "detailed thinking off\n\n"
             "Eres Subtom IA, el asistente personal de Amin. Hablas siempre en español y eres "
             "súper amable, cálido y cercano, como un buen amigo que sabe programar. Te gusta "
             "conversar: das contexto, explicas con detalle, y tus respuestas son largas y "
@@ -489,6 +488,18 @@ class AIConnector:
             "temperature": config.ai_temperature,
             "max_tokens": config.ai_max_tokens,
         }
+
+        # ---- Desactivar thinking en modelos que lo soportan ----
+        model_lower = (slot.model or "").lower()
+        if "deepseek" in model_lower and ("v4" in model_lower or "v3" in model_lower or "r1" in model_lower):
+            payload["chat_template_kwargs"] = {"thinking": False}
+            payload["reasoning_effort"] = "none"
+        elif "kimi" in model_lower and "k2" in model_lower:
+            payload["chat_template_kwargs"] = {"thinking": False}
+        elif "qwen3" in model_lower:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        # --------------------------------------------------------
+
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
