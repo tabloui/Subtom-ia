@@ -489,16 +489,11 @@ class AIConnector:
             "max_tokens": config.ai_max_tokens,
         }
 
-        # ---- Desactivar thinking en modelos que lo soportan ----
+        # ---- Solo reasoning_effort (chat_template_kwargs da 500 en NIM) ----
         model_lower = (slot.model or "").lower()
-        if "deepseek" in model_lower and ("v4" in model_lower or "v3" in model_lower or "r1" in model_lower):
-            payload["chat_template_kwargs"] = {"thinking": False}
+        if any(x in model_lower for x in ["deepseek", "qwen3", "kimi", "glm", "nemotron"]):
             payload["reasoning_effort"] = "none"
-        elif "kimi" in model_lower and "k2" in model_lower:
-            payload["chat_template_kwargs"] = {"thinking": False}
-        elif "qwen3" in model_lower:
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
-        # --------------------------------------------------------
+        # -------------------------------------------------------------------
 
         if tools:
             payload["tools"] = tools
