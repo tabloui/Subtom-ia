@@ -527,8 +527,12 @@ class AIConnector:
             "max_tokens": config.ai_max_tokens,
         }
 
-        # NOTA: no se añade reasoning_effort ni chat_template_kwargs.
-        # NVIDIA NIM devuelve HTTP 500 con esos parámetros en varios modelos.
+        # ---- Activar thinking solo en Kimi K2.5/K2.6 ----
+        # NOTA: si NVIDIA devuelve HTTP 500 con este parámetro, comenta este bloque.
+        model_lower = (slot.model or "").lower()
+        if "kimi" in model_lower and ("k2.5" in model_lower or "k2.6" in model_lower):
+            payload["thinking"] = {"type": "enabled"}
+        # -------------------------------------------------
 
         if tools:
             payload["tools"] = tools
