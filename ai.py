@@ -29,7 +29,7 @@ AUDIO_EXTENSIONS = {
 
 REPO_PRINCIPAL = "tabloui/subtom-ia"
 
-MAX_LINES_PER_TOOL_CALL = 50
+MAX_LINES_PER_TOOL_CALL = 3000
 
 POLLINATIONS_MODELS = ["flux", "flux-realism", "turbo"]
 
@@ -316,82 +316,6 @@ class Agent:
 
         return []
 
-    # ============================================================
-    # NUEVOS MÉTODOS: PARSER DE PLANES + MINI TRADUCTOR
-    # ============================================================
-
-    def _extract_plans_from_reasoning(self, reasoning: str) -> list[dict]:
-        """Extrae todos los bloques JSON válidos del razonamiento que tengan 'tool'."""
-        if not reasoning:
-            return []
-        plans: list[dict] = []
-        depth = 0
-        start = None
-        for i, ch in enumerate(reasoning):
-            if ch == "{":
-                if depth == 0:
-                    start = i
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0 and start is not None:
-                    chunk = reasoning[start:i + 1]
-                    try:
-                        data = json.loads(chunk)
-                        if isinstance(data, dict) and "tool" in data:
-                            plans.append(data)
-                    except json.JSONDecodeError:
-                        pass
-                    start = None
-        return plans
-
-    def _traducir_plan(self, plan: dict) -> str:
-        """Convierte un plan JSON en una línea legible para el chat."""
-        tool = str(plan.get("tool", "?"))
-        args = plan.get("args") or {}
-        desc = str(plan.get("plan") or "").strip()
-
-        ACCIONES = {
-            "generate_image": "Generando imagen",
-            "web_search": "Buscando en internet",
-            "web_fetch": "Descargando web",
-            "file_write": "Escribiendo archivo",
-            "file_read": "Leyendo archivo",
-            "file_list": "Listando archivos",
-            "file_tree": "Viendo árbol de archivos",
-            "file_grep": "Buscando texto en archivos",
-            "github_write": "Subiendo código a GitHub",
-            "github_read": "Leyendo archivo de GitHub",
-            "github_create_repo": "Creando repositorio en GitHub",
-            "github_upload_project": "Subiendo proyecto a GitHub",
-            "github_list": "Listando repositorios de GitHub",
-            "github_tree": "Viendo árbol del repositorio",
-            "discord_send_file": "Enviando archivo al chat",
-            "discord_send_message": "Enviando mensaje",
-            "discord_send_dm": "Enviando mensaje directo",
-            "sandbox_run_python": "Ejecutando Python",
-            "sandbox_run_shell": "Ejecutando comando de shell",
-            "sandbox_run_node": "Ejecutando JavaScript",
-            "sandbox_run_bash": "Ejecutando script Bash",
-            "sandbox_pip_install": "Instalando paquetes Python",
-            "vercel_projects": "Listando proyectos de Vercel",
-            "vercel_deployments": "Listando deployments de Vercel",
-            "vercel_redeploy": "Redesplegando en Vercel",
-        }
-        verbo = ACCIONES.get(tool, f"Usando `{tool}`")
-
-        pista = ""
-        for clave in ("prompt", "query", "url", "path", "name", "title", "repo"):
-            if clave in args and isinstance(args[clave], str) and args[clave].strip():
-                valor = args[clave].strip().replace("\n", " ")
-                pista = f' → "{valor[:90]}"'
-                break
-
-        if not pista and desc:
-            pista = f' → "{desc[:90]}"'
-
-        return f"🌳 **{verbo}**{pista}"
-
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
             {"type": "function", "function": {
@@ -425,8 +349,8 @@ class Agent:
             {"type": "function", "function": {
                 "name": "file_write",
                 "description": (
-                    "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 50 líneas por llamada. "
-                    "Para archivos grandes, escribe el código en tu RESPUESTA DE TEXTO con el formato:\n"
+                    "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 3000 líneas por llamada. "
+                    "Para archivos más grandes, escribe el código en tu RESPUESTA DE TEXTO con el formato:\n"
                     "FILE: nombre.ext\n```lenguaje\n...contenido...\n```\n"
                     "y el sistema lo extraerá y guardará automáticamente."
                 ),
@@ -434,7 +358,7 @@ class Agent:
             }},
             {"type": "function", "function": {
                 "name": "file_append",
-                "description": "Añade contenido al final de un archivo. LÍMITE DURO: 50 líneas por llamada.",
+                "description": "Añade contenido al final de un archivo. LÍMITE DURO: 3000 líneas por llamada.",
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
             {"type": "function", "function": {
@@ -537,8 +461,8 @@ class Agent:
             {"type": "function", "function": {
                 "name": "github_write",
                 "description": (
-                    "Escribe un archivo en GitHub. LÍMITE DURO: máximo 50 líneas en 'content'. "
-                    "Para archivos grandes, USA EL FORMATO 'FILE: nombre.ext' + bloque ``` en tu "
+                    "Escribe un archivo en GitHub. LÍMITE DURO: máximo 3000 líneas en 'content'. "
+                    "Para archivos más grandes, USA EL FORMATO 'FILE: nombre.ext' + bloque ``` en tu "
                     "respuesta de texto. El sistema lo extraerá y guardará automáticamente."
                 ),
                 "parameters": {"type": "object", "properties": {
@@ -1558,8 +1482,6 @@ class Agent:
                 result_history: list[str] = []
                 rounds_used = 0
                 malformed_retries = 0
-                reasoning_chunks: list[str] = []   # NUEVO
-                plan_lines: list[str] = []         # NUEVO
 
                 while True:
                     rounds_used += 1
@@ -1578,20 +1500,9 @@ class Agent:
                     tool_calls = self._extract_tool_calls(message)
                     finish_reason = choices[0].get("finish_reason", "unknown")
 
-                    # NUEVO: capturar reasoning_content y extraer planes
-                    reasoning = message.get("reasoning_content") or ""
-                    if reasoning and isinstance(reasoning, str):
-                        reasoning_chunks.append(reasoning.strip())
-                        for plan in self._extract_plans_from_reasoning(reasoning):
-                            linea = self._traducir_plan(plan)
-                            plan_lines.append(linea)
-                            print(f"[PLAN] {linea}")
-
                     assistant_message: dict[str, Any] = {"role": "assistant", "content": message.get("content")}
                     if tool_calls:
                         assistant_message["tool_calls"] = tool_calls
-                    if reasoning:
-                        assistant_message["reasoning_content"] = reasoning
                     messages.append(assistant_message)
 
                     if not tool_calls and finish_reason == "malformed_function_call":
@@ -1629,20 +1540,6 @@ class Agent:
                             guardados = await self._process_file_blocks(answer)
                             if guardados:
                                 answer += f"\n\nGuardé {len(guardados)} archivo(s) pendientes: {', '.join(guardados)}\nDime 'súbelo' si quieres subirlos a GitHub."
-
-                        # NUEVO: si hubo planes, mostrarlos y OCULTAR la respuesta final del modelo.
-                        # Si NO hubo planes (conversación normal), mantener la respuesta tal cual.
-                        if plan_lines:
-                            answer = "\n".join(plan_lines)
-                            print(f"[PLAN] Mostrando {len(plan_lines)} planes (respuesta final oculta)")
-                        # Si quieres ver también el razonamiento crudo, descomenta esto:
-                        # if reasoning_chunks:
-                        #     razonamiento = "\n\n".join(reasoning_chunks).strip()
-                        #     if len(razonamiento) > 1500:
-                        #         razonamiento = razonamiento[:1500] + "\n…(recortado)"
-                        #     lineas = razonamiento.split("\n")
-                        #     bloque = "\n".join(f"> {l}" if l.strip() else ">" for l in lineas)
-                        #     answer = f"{answer}\n\n🧠 **Razonamiento:**\n{bloque}"
 
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
@@ -1686,8 +1583,6 @@ class Agent:
                             answer = f"No pude completar la operación: {err_msg}"
                             if extra:
                                 answer += f"\n\n{extra}"
-                            if plan_lines:
-                                answer = "\n".join(plan_lines) + "\n\n" + answer
                             await self.save(user_id, channel_id, "assistant", answer)
                             return answer, image_url, files_to_send or None
 
@@ -1698,8 +1593,6 @@ class Agent:
                             if result_history.count(result_hash) >= 1:
                                 print(f"[MOTOR] sandbox_run_python falla repetidamente. Cortando.")
                                 answer = f"No pude ejecutar el código en el sandbox. Error: {result.get('error')}"
-                                if plan_lines:
-                                    answer = "\n".join(plan_lines) + "\n\n" + answer
                                 await self.save(user_id, channel_id, "assistant", answer)
                                 return answer, image_url, files_to_send or None
 
