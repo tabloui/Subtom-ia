@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-from daytona import Daytona, DaytonaConfig, CreateSandboxParams
+from e2b_code_interpreter import AsyncSandbox
 
 
 class Sandbox:
@@ -29,7 +29,7 @@ class Sandbox:
         self.max_output = max_output
         self.max_download = max_download
         self.max_retries = max_retries
-        self._sandbox = None
+        self._sandbox: AsyncSandbox | None = None
         self._lock = asyncio.Lock()
 
     def _success(self, **data: Any) -> dict[str, Any]:
@@ -51,23 +51,20 @@ class Sandbox:
     def _limit(self, value: Any) -> str:
         return str(value or "")[: self.max_output]
 
-    async def _get_sandbox(self):
+    async def _get_sandbox(self) -> AsyncSandbox:
         async with self._lock:
             if self._sandbox is not None:
                 return self._sandbox
-
-            api_key = os.getenv("DAYTONA_API_KEY")
+            api_key = os.getenv("E2B_API_KEY")
             if not api_key:
-                raise RuntimeError("DAYTONA_API_KEY no configurada en las variables de entorno.")
-
-            daytona = Daytona(DaytonaConfig(api_key=api_key))
-
-            self._sandbox = daytona.create(CreateSandboxParams(
-                language="python",
-                cpu=4.0,
-                memory=8.0,
-                disk=10.0,
-            ))
+                raise RuntimeError("E2B_API_KEY no configurada en las variables de entorno.")
+            
+            self._sandbox = await AsyncSandbox.create(
+                timeout=3600,
+                api_key=api_key,
+                cpu_count=4,
+                memory_mb=8192,
+            )
             return self._sandbox
 
     async def close(self) -> None:
@@ -75,8 +72,7 @@ class Sandbox:
             if self._sandbox is None:
                 return
             try:
-                daytona = Daytona(DaytonaConfig(api_key=os.getenv("DAYTONA_API_KEY")))
-                daytona.remove(self._sandbox)
+                await self._sandbox.kill()
             except Exception:
                 pass
             finally:
@@ -90,15 +86,15 @@ class Sandbox:
         start = time.monotonic()
         try:
             sandbox = await self._get_sandbox()
-            response = sandbox.process.code_run('print("SANDBOX_OK")')
+            result = await sandbox.commands.run("printf 'SANDBOX_OK\\n'", timeout=10)
             duration = time.monotonic() - start
-            if response.exit_code != 0:
+            if result.exit_code != 0:
                 return self._error("health_check", "El sandbox respondió con código distinto de 0.",
-                                   retryable=True, stdout=self._limit(response.result),
-                                   returncode=response.exit_code, duration=round(duration, 3))
+                                   retryable=True, stdout=self._limit(result.stdout),
+                                   stderr=self._limit(result.stderr), returncode=result.exit_code, duration=round(duration, 3))
             return self._success(operation="health_check", status="healthy",
-                                 stdout=self._limit(response.result),
-                                 returncode=response.exit_code, duration=round(duration, 3))
+                                 stdout=self._limit(result.stdout), stderr=self._limit(result.stderr),
+                                 returncode=result.exit_code, duration=round(duration, 3))
         except Exception as exc:
             try:
                 await self._reset_sandbox()
@@ -113,14 +109,21 @@ class Sandbox:
         for attempt in range(self.max_retries + 1):
             try:
                 sandbox = await self._get_sandbox()
-                response = sandbox.process.code_run(code)
-                stdout = self._limit(response.result)
-                returncode = response.exit_code
+                execution = await sandbox.run_code(code, timeout=self.timeout)
+                stdout = self._limit(execution.text)
+                stderr = ""
+                returncode = 0
+                if execution.error:
+                    stderr = f"{execution.error.name}: {execution.error.value}"
+                    if execution.error.traceback:
+                        stderr += "\n" + execution.error.traceback
+                    stderr = self._limit(stderr)
+                    returncode = 1
                 return {
                     "ok": returncode == 0,
                     "operation": "run_python",
                     "stdout": stdout,
-                    "stderr": "",
+                    "stderr": stderr,
                     "returncode": returncode,
                     "duration": round(time.monotonic() - start, 3),
                     "attempt": attempt + 1,
@@ -152,14 +155,14 @@ class Sandbox:
         start = time.monotonic()
         try:
             sandbox = await self._get_sandbox()
-            response = sandbox.process.exec(command)
+            result = await sandbox.commands.run(command, timeout=self.timeout)
             return {
-                "ok": response.exit_code == 0,
+                "ok": result.exit_code == 0,
                 "operation": "run_shell",
                 "command": command,
-                "stdout": self._limit(response.result),
-                "stderr": "",
-                "returncode": response.exit_code,
+                "stdout": self._limit(result.stdout),
+                "stderr": self._limit(result.stderr),
+                "returncode": result.exit_code,
                 "duration": round(time.monotonic() - start, 3),
             }
         except Exception as exc:
@@ -189,13 +192,19 @@ class Sandbox:
         start = time.monotonic()
         try:
             sandbox = await self._get_sandbox()
-            response = sandbox.process.exec(f"node -e {shlex.quote(code)}")
+            command = (
+                "cat > /tmp/sandbox_script.js << 'SANDBOX_EOF'\n"
+                + code
+                + "\nSANDBOX_EOF\n"
+                "node /tmp/sandbox_script.js"
+            )
+            result = await sandbox.commands.run(command, timeout=self.timeout)
             return {
-                "ok": response.exit_code == 0,
+                "ok": result.exit_code == 0,
                 "operation": "run_node",
-                "stdout": self._limit(response.result),
-                "stderr": "",
-                "returncode": response.exit_code,
+                "stdout": self._limit(result.stdout),
+                "stderr": self._limit(result.stderr),
+                "returncode": result.exit_code,
                 "duration": round(time.monotonic() - start, 3),
             }
         except Exception as exc:
@@ -387,9 +396,9 @@ for page in reader.pages:
         try:
             sandbox = await self._get_sandbox()
             command = "cat > " + shlex.quote(path) + " << 'SANDBOX_EOF'\n" + content + "\nSANDBOX_EOF"
-            response = sandbox.process.exec(command)
-            return {"ok": response.exit_code == 0, "operation": "write_file", "path": path,
-                    "stdout": self._limit(response.result), "stderr": "", "returncode": response.exit_code}
+            result = await sandbox.commands.run(command, timeout=self.timeout)
+            return {"ok": result.exit_code == 0, "operation": "write_file", "path": path,
+                    "stdout": self._limit(result.stdout), "stderr": self._limit(result.stderr), "returncode": result.exit_code}
         except Exception as exc:
             await self._safe_reset()
             return self._error("write_file", exc, retryable=True)
