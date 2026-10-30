@@ -2,6 +2,9 @@
 """
 file_tools.py
 Herramientas de archivos, web y utilidades para Subtom IA.
+
+Integra el motor de búsqueda mejorado (search.py / search_mejorado.py):
+caché TTL, reintentos, rerank heurístico, deduplicación y validación de URL.
 """
 
 from __future__ import annotations
@@ -48,6 +51,29 @@ try:
     _HAS_YAML = True
 except Exception:
     _HAS_YAML = False
+
+
+# ======================================================================
+# MOTOR DE BÚSQUEDA MEJORADO
+# ======================================================================
+
+try:
+    from search import (  # type: ignore
+        search as _ddg_search,
+        SearchError as _SearchError,
+    )
+    _HAS_SEARCH = True
+except Exception:
+    try:
+        from search_mejorado import (  # type: ignore
+            search as _ddg_search,
+            SearchError as _SearchError,
+        )
+        _HAS_SEARCH = True
+    except Exception:
+        _ddg_search = None
+        _SearchError = Exception  # type: ignore
+        _HAS_SEARCH = False
 
 
 TEXT_EXTENSIONS = {
@@ -858,68 +884,77 @@ class FileTools:
     # ======================================================================
 
     async def web_search(
-        self, query: str, max_results: int = 5, timeout: float = 15.0,
+        self,
+        query: str,
+        max_results: int = 5,
+        timeout: float = 15.0,
+        *,
+        region: str | None = None,
+        safesearch: str | None = None,
+        use_cache: bool = True,
+        rerank: bool = True,
     ) -> dict[str, Any]:
+        """
+        Busca en la web usando el motor mejorado (search.py).
+
+        Devuelve el formato clásico:
+            {"query": ..., "count": N, "results": [
+                {"title", "url", "snippet", "score", "rank", "source"},
+                ...
+            ]}
+        En caso de error devuelve {"error": "...", "results": []}.
+        """
         if not query or not query.strip():
             return {"error": "query vacío", "results": []}
-        max_results = max(1, min(int(max_results), 10))
-        headers = {
-            "User-Agent": self._next_ua(),
-            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-            "Referer": "https://duckduckgo.com/",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
-        client_timeout = aiohttp.ClientTimeout(total=timeout)
+
         try:
-            async with aiohttp.ClientSession(
-                headers=headers, timeout=client_timeout,
-            ) as session:
-                async with session.post(
-                    "https://html.duckduckgo.com/html/",
-                    data={"q": query, "kl": "wt-wt"},
-                    allow_redirects=True,
-                ) as resp:
-                    if resp.status == 202:
-                        return {"error": "DDG rate limit (202).", "results": []}
-                    if resp.status >= 400:
-                        return {"error": f"DDG HTTP {resp.status}", "results": []}
-                    html = await resp.text()
+            n = int(max_results)
+        except (TypeError, ValueError):
+            n = 5
+        n = max(1, min(n, 10))
+
+        if not _HAS_SEARCH or _ddg_search is None:
+            return {
+                "error": (
+                    "Motor de búsqueda no disponible. "
+                    "Asegúrate de tener 'search.py' (o 'search_mejorado.py') "
+                    "y el paquete 'ddgs' instalado."
+                ),
+                "results": [],
+            }
+
+        try:
+            results = await _ddg_search(
+                query,
+                max_results=n,
+                region=region,
+                safesearch=safesearch,
+                timeout_s=timeout,
+                use_cache=use_cache,
+                rerank=rerank,
+            )
+        except _SearchError as exc:  # type: ignore[misc]
+            code = getattr(exc, "code", "search_error")
+            message = getattr(exc, "message", str(exc))
+            return {"error": f"{code}: {message}", "results": []}
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}", "results": []}
 
-        soup = BeautifulSoup(html, "lxml")
-
-        def clean(u: str) -> str:
-            if not u:
-                return ""
-            if u.startswith("//"):
-                u = "https:" + u
-            if "uddg=" in u:
-                qs = parse_qs(urlparse(u).query)
-                t = qs.get("uddg", [""])[0]
-                if t:
-                    return unquote(t)
-            return u
-
-        results: list[dict[str, str]] = []
-        for block in soup.select("div.result, div.web-result"):
-            title_el = block.select_one("a.result__a")
-            if not title_el:
-                continue
-            title = title_el.get_text(" ", strip=True)
-            url = clean(title_el.get("href", ""))
-            snippet_el = block.select_one(".result__snippet")
-            snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
-            if not url or not title:
-                continue
-            results.append({
-                "title": title[:200],
-                "url": url,
-                "snippet": snippet[:500],
-            })
-            if len(results) >= max_results:
-                break
-        return {"query": query, "count": len(results), "results": results}
+        return {
+            "query": query,
+            "count": len(results),
+            "results": [
+                {
+                    "title": r.title,
+                    "url": r.url,
+                    "snippet": r.snippet,
+                    "score": getattr(r, "score", 0.0),
+                    "rank": getattr(r, "rank", idx + 1),
+                    "source": getattr(r, "source", "duckduckgo"),
+                }
+                for idx, r in enumerate(results)
+            ],
+        }
 
     async def web_fetch(
         self, url: str, max_chars: int = 8000, timeout: float = 20.0,
@@ -1159,8 +1194,13 @@ def replace_many(name: str, replacements: dict) -> dict[str, Any]:
 def search_and_replace_dir(directory: str, old: str, new: str) -> dict[str, Any]:
     return TOOLS.search_and_replace_dir(directory, old, new)
 
-async def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
-    return await TOOLS.web_search(query, max_results)
+async def web_search(
+    query: str,
+    max_results: int = 5,
+    timeout: float = 15.0,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return await TOOLS.web_search(query, max_results, timeout, **kwargs)
 
 async def web_fetch(url: str, max_chars: int = 8000) -> dict[str, Any]:
     return await TOOLS.web_fetch(url, max_chars)
