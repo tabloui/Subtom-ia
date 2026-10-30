@@ -259,42 +259,36 @@ class AIConnector:
             "Nunca escribas su nombre o llamada como texto: no se ejecuta. "
             "Si no puedes usarla, dilo; nunca simules resultados.\n"
 
-            "2. Para enviar archivos usa discord_send_file con la ruta. "
-            "generate_image ya envía la imagen sola.\n"
+            "2. SIEMPRE que el usuario te pida crear un archivo (código, texto, HTML, etc.), "
+            "usa la herramienta file_write. "
+            "Si el usuario te pide que le ENVÍES el archivo al chat, usa SIEMPRE "
+            "la herramienta discord_send_file con la ruta del archivo. "
+            "NUNCA escribas el código en un bloque de texto en el chat para que el usuario lo copie.\n"
 
-            "3. Archivos de más de 50 líneas: "
-            "no uses file_write ni github_write. "
-            "Escribe en la respuesta:\n"
-            "FILE: nombre.ext\n"
-            "```lenguaje\n"
-            "...contenido...\n"
-            "```\n"
-            "Se guardan solos; puedes poner varios bloques.\n"
-
-            "4. Formato: párrafos cortos, listas con guiones, "
+            "3. Formato: párrafos cortos, listas con guiones, "
             "código en bloques ```.\n"
 
-            "5. Teléfono (phone_*): status, battery, location, wifi, "
+            "4. Teléfono (phone_*): status, battery, location, wifi, "
             "sms, vibrate, notify, torch, brightness, photo, volume, "
             "clipboard_get, clipboard_set, apps, processes, shell "
             "(acciones avanzadas). Úsalas cuando pida algo del móvil. "
             "Ej: batería→phone_battery, vibra 2s→phone_vibrate ms=2000, "
             "linterna→phone_torch state=on, foto→phone_photo camera=0.\n"
 
-            "6. También tienes: GitHub (repos, archivos, issues, PRs, "
+            "5. También tienes: GitHub (repos, archivos, issues, PRs, "
             "búsqueda, commits), Vercel (proyectos y deployments), "
             "workspace (leer, escribir, listar, borrar, árbol) "
             "y web (buscar, descargar URLs).\n"
 
-            "7. Usa generate_image solo si lo piden explícitamente "
+            "6. Usa generate_image solo si lo piden explícitamente "
             "(dibuja, logo, imagen...).\n"
 
-            "8. Proyecto nuevo (web, app, bot, landing): "
+            "7. Proyecto nuevo (web, app, bot, landing): "
             "pregunta primero en qué repositorio. "
             "No reutilices uno anterior sin que lo pida. "
             "Luego crea el repo y sube los archivos.\n"
 
-            "9. Nunca inventes. Si una herramienta falla, informa el error."
+            "8. Nunca inventes. Si una herramienta falla, informa el error."
         )
 
     @staticmethod
@@ -713,7 +707,7 @@ class AIConnector:
                     f"({finish_reason})."
                 )
 
-            elif finish_reason == "max_tokens":
+            elif finish_reason in ("max_tokens", "length"):
 
                 text = (
                     "La respuesta se cortó por "
@@ -972,26 +966,16 @@ class AIConnector:
         }
 
         # ==========================================================
-        # DEEPSEEK V4.1 FLASH - NON THINKING
+        # CONTROL DE THINKING
         # ==========================================================
-        #
-        # NVIDIA documenta que DeepSeek-V4.1-Flash acepta:
-        #
-        #   reasoning_effort = "none"
-        #
-        # para desactivar el thinking/reasoning.
-        #
-        # Solo lo aplicamos a V4.1-Flash para no modificar el
-        # comportamiento de los demás modelos/proveedores.
-        #
         model_lower = selected_model.lower()
 
-        is_deepseek_v41_flash = (
-            "deepseek-v4.1-flash" in model_lower
-        )
-
-        if is_deepseek_v41_flash:
+        if "deepseek-v4.1-flash" in model_lower:
             payload["reasoning_effort"] = "none"
+            
+        elif "gemini" in model_lower:
+            # Puedes poner "none" para desactivar, o "high" para activar el razonamiento
+            payload["reasoning_effort"] = "none" 
 
         # ==========================================================
         # TOOL CALLING
