@@ -267,55 +267,6 @@ class Agent:
                 })
         return converted
 
-    _FILE_BLOCK_RE = re.compile(
-        r"FILE:\s*([^\n`]+?)\s*\n"
-        r"```[a-zA-Z0-9_+\-]*[ \t]*\n"
-        r"(.*?)"
-        r"\n```",
-        re.DOTALL | re.IGNORECASE,
-    )
-
-    def _extract_file_blocks(self, text: str) -> list[dict[str, str]]:
-        if not text:
-            return []
-        blocks = []
-        for match in self._FILE_BLOCK_RE.finditer(text):
-            filename = match.group(1).strip().strip("`").strip()
-            content = match.group(2)
-            if filename and content:
-                blocks.append({
-                    "filename": filename,
-                    "content": content.rstrip() + "\n",
-                })
-        return blocks
-
-    async def _process_file_blocks(self, text: str) -> list[str]:
-        blocks = self._extract_file_blocks(text)
-        if not blocks:
-            return []
-
-        saved_files: list[str] = []
-
-        for block in blocks:
-            filename = block["filename"]
-            content = block["content"]
-
-            safe_name = re.sub(r"[^a-zA-Z0-9._\-]", "_", filename)
-            pending_name = f"pending_{safe_name}"
-            try:
-                self.files.write_file(pending_name, content)
-                print(f"[FILE_BLOCK] Guardado {pending_name} ({len(content)} chars)")
-                saved_files.append(pending_name)
-            except Exception as exc:
-                print(f"[FILE_BLOCK] Error guardando {pending_name}: {exc}")
-                continue
-
-        if saved_files:
-            print(f"[FILE_BLOCK] {len(saved_files)} archivos guardados en local (pendientes de aprobación).")
-            return saved_files
-
-        return []
-
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
             {"type": "function", "function": {
@@ -350,15 +301,14 @@ class Agent:
                 "name": "file_write",
                 "description": (
                     "Crea o reemplaza un archivo de texto. LÍMITE DURO: máximo 3000 líneas por llamada. "
-                    "Para archivos más grandes, escribe el código en tu RESPUESTA DE TEXTO con el formato:\n"
-                    "FILE: nombre.ext\n```lenguaje\n...contenido...\n```\n"
-                    "y el sistema lo extraerá y guardará automáticamente."
+                    "OBLIGATORIO USAR ESTA HERRAMIENTA. PROHIBIDO escribir código directamente en el chat. "
+                    "Si el archivo tiene más de 3000 líneas, usa 'file_append' para añadir el resto."
                 ),
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
             {"type": "function", "function": {
                 "name": "file_append",
-                "description": "Añade contenido al final de un archivo. LÍMITE DURO: 3000 líneas por llamada.",
+                "description": "Añade contenido al final de un archivo. LÍMITE DURO: 3000 líneas por llamada. Usa esto si el código es muy largo.",
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
             }},
             {"type": "function", "function": {
@@ -462,8 +412,8 @@ class Agent:
                 "name": "github_write",
                 "description": (
                     "Escribe un archivo en GitHub. LÍMITE DURO: máximo 3000 líneas en 'content'. "
-                    "Para archivos más grandes, USA EL FORMATO 'FILE: nombre.ext' + bloque ``` en tu "
-                    "respuesta de texto. El sistema lo extraerá y guardará automáticamente."
+                    "OBLIGATORIO USAR ESTA HERRAMIENTA. PROHIBIDO escribir código directamente en el chat. "
+                    "Si es más grande, usa un archivo local con file_write y luego github_upload_project."
                 ),
                 "parameters": {"type": "object", "properties": {
                     "repo": {"type": "string"},
@@ -779,8 +729,7 @@ class Agent:
                             "error": f"CONTENIDO DEMASIADO GRANDE: {line_count} líneas (máximo {MAX_LINES_PER_TOOL_CALL})",
                             "instruction": (
                                 f"El bloque tiene {line_count} líneas y el máximo es {MAX_LINES_PER_TOOL_CALL}. "
-                                "USA EL FORMATO 'FILE: nombre.ext' + bloque ``` en tu respuesta de texto. "
-                                "El sistema lo extraerá y guardará automáticamente sin límites."
+                                "Usa 'file_write' para la primera parte y luego 'file_append' para el resto."
                             ),
                         }
 
@@ -1251,10 +1200,17 @@ class Agent:
             for repo_path, ws_path in files_map.items():
                 try:
                     full = Path(ws_path)
-                    if not full.is_absolute() and not full.exists():
-                        candidate = Path(config.workspace) / ws_path
-                        if candidate.exists():
-                            full = candidate
+                    # Búsqueda robusta en el workspace
+                    if not full.is_absolute():
+                        if not full.exists():
+                            candidate = Path(config.workspace) / ws_path
+                            if candidate.exists():
+                                full = candidate
+                            else:
+                                candidate2 = Path(config.workspace) / full.name
+                                if candidate2.exists():
+                                    full = candidate2
+                    
                     if not full.is_file():
                         print(f"[GITHUB_UPLOAD] No encontrado: {ws_path}")
                         continue
@@ -1271,7 +1227,7 @@ class Agent:
                 tree_items.append({"path": repo_path.lstrip("/"), "mode": "100644", "type": "blob", "sha": sha_blob})
                 uploaded.append({"repo_path": repo_path, "size": len(raw)})
             if not tree_items:
-                return {"error": "Ningún archivo válido."}
+                return {"error": "Ningún archivo válido encontrado en el workspace."}
             async with session.post(f"{base}/git/trees", headers=headers, json={"base_tree": parent_tree, "tree": tree_items}) as resp:
                 tree = await resp.json(content_type=None)
                 if resp.status >= 400:
@@ -1513,9 +1469,8 @@ class Agent:
                                 "role": "user",
                                 "content": (
                                     "TU ÚLTIMO INTENTO FALLÓ con 'malformed_function_call'. "
-                                    "OBLIGATORIO: escribe el código en un bloque 'FILE: nombre.ext' + ``` en tu respuesta de texto. "
-                                    "NO uses github_write con contenido grande. Solo texto + bloque markdown. "
-                                    "El sistema lo extraerá y guardará automáticamente."
+                                    "OBLIGATORIO: Divide el código en partes más pequeñas y usa 'file_write' "
+                                    "seguido de 'file_append' si es necesario. NO intentes escribir más de 3000 líneas de golpe."
                                 )
                             })
                             continue
@@ -1535,11 +1490,6 @@ class Agent:
                                 answer = "El modelo devolvió un error genérico. Prueba otra vez."
                             else:
                                 answer = f"No he recibido respuesta del modelo (finish_reason: {finish_reason})."
-
-                        if answer:
-                            guardados = await self._process_file_blocks(answer)
-                            if guardados:
-                                answer += f"\n\nGuardé {len(guardados)} archivo(s) pendientes: {', '.join(guardados)}\nDime 'súbelo' si quieres subirlos a GitHub."
 
                         await self.save(user_id, channel_id, "assistant", answer)
                         dt = asyncio.get_event_loop().time() - t0
